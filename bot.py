@@ -85,6 +85,8 @@ class PollButton(Button):
         results = {}
         for v in votes:
             results.setdefault(v["emoji"], []).append(v["user_id"])
+        channel = interaction.channel
+        guild = channel.guild
         non_voters = [
             m for m in guild.members
             if not m.bot
