@@ -85,7 +85,12 @@ class PollButton(Button):
         results = {}
         for v in votes:
             results.setdefault(v["emoji"], []).append(v["user_id"])
-
+        non_voters = [
+            m for m in guild.members
+            if not m.bot
+            and m.id not in voted_user_ids
+            and channel.permissions_for(m).read_messages
+        ]
         emojis = [chr(0x1F1E6 + i) for i in range(len(poll["options"]))]
         lines = [f"📊 **{poll['question']}**\n"]
         for i, opt in enumerate(poll["options"]):
@@ -96,7 +101,7 @@ class PollButton(Button):
                 lines.append(f"{emoji} **{opt}** ({len(voters)} votes): {mentions}")
             else:
                 lines.append(f"{emoji} **{opt}** (0 vote)")
-
+        lines.append(f"\n👥 **Non-votants** : {len(non_voters)}")
         new_content = "\n".join(lines)
 
         await interaction.message.edit(
@@ -201,6 +206,52 @@ async def poll(interaction: discord.Interaction,
     await message.edit(view=view)
 
     await interaction.followup.send(f"Sondage créé ici : {message.jump_url}")
+
+# -------------------- Rappel automatique --------------------
+@tasks.loop(hours=1)
+async def rappel_sondages():
+    print("📬 Envoi des rappels de sondages...")
+    async with db.acquire() as conn:
+        polls = await conn.fetch("SELECT * FROM polls")
+        for poll in polls:
+            channel = bot.get_channel(poll["channel_id"])
+            if not channel:
+                continue
+
+            try:
+                message = await channel.fetch_message(poll["message_id"])
+            except discord.NotFound:
+                continue
+
+            guild = channel.guild
+            choix_multiple = len(poll["options"]) > 2
+
+            votes_data = await conn.fetch("SELECT user_id FROM votes WHERE poll_id=$1", poll["id"])
+            voter_ids = {v["user_id"] for v in votes_data}
+
+            for member in guild.members:
+                # ⚙️ Filtrer : bots, votants, et ceux sans accès au salon
+                if (
+                    member.bot
+                    or member.id in voter_ids
+                    or not channel.permissions_for(member).read_messages
+                ):
+                    continue
+
+                # Si choix multiple, rappeler uniquement s’il n’y a aucun vote du tout
+                if choix_multiple and voter_ids:
+                    continue
+
+                try:
+                    await member.send(
+                        f"👋 Tu n’as pas encore voté au sondage : **{poll['question']}**\n👉 {message.jump_url}"
+                    )
+                except discord.Forbidden:
+                    pass
+
+@rappel_sondages.before_loop
+async def before_rappel():
+    await bot.wait_until_ready()
 
 # -------------------- Démarrage --------------------
 bot.run(os.getenv("TOKEN_DISCORD"))
