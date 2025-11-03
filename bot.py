@@ -81,10 +81,12 @@ class PollButton(Button):
         async with self.db.acquire() as conn:
             poll = await conn.fetchrow("SELECT * FROM polls WHERE id=$1", self.poll_id)
             votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", self.poll_id)
-
+        voted_user_ids = set()
         results = {}
         for v in votes:
             results.setdefault(v["emoji"], []).append(v["user_id"])
+            voted_user_ids.add(v["user_id"])
+        
         channel = interaction.channel
         guild = channel.guild
         non_voters = [
