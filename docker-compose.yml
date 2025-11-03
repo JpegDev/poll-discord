@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  discord-bot:
+    build: .
+    container_name: discord-bot
+    environment:
+      - TOKEN_DISCORD=[YOUR_DISCORD_TOKEN]
+      - DATABASE_URL=postgresql://user:password@db:5432/sondages
+    restart: always
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16
+    container_name: discord_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: sondages
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
