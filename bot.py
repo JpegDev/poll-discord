@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import Button, View
 import logging
+from collections import defaultdict
 logging.basicConfig(level=logging.INFO)
 
 # -------------------- Intents --------------------
@@ -220,6 +221,13 @@ async def rappel_sondages():
     logging.info("📬 Envoi des rappels de sondages...")
     async with db.acquire() as conn:
         polls = await conn.fetch("SELECT * FROM polls")
+        if not polls:
+            logging.info("Aucun sondage trouvé.")
+            return
+
+        # Dictionnaire : {user_id: [liste de sondages non votés]}
+        rappels_utilisateurs = defaultdict(list)
+
         for poll in polls:
             channel = bot.get_channel(poll["channel_id"])
             if not channel:
@@ -249,12 +257,31 @@ async def rappel_sondages():
                 if choix_multiple and voter_ids:
                     continue
 
-                try:
-                    await member.send(
-                        f"👋 Tu n’as pas encore voté au sondage : **{poll['question']}**\n👉 {message.jump_url}"
-                    )
-                except discord.Forbidden:
-                    pass
+                # Ajouter ce sondage à la liste de rappels de l'utilisateur
+                rappels_utilisateurs[member.id].append(
+                    (poll["question"], message.jump_url)
+                )
+
+        # 🔔 Envoi d’un seul message par utilisateur
+        for user_id, sondages in rappels_utilisateurs.items():
+            user = bot.get_user(user_id)
+            if not user:
+                continue
+
+            # Construire le message unique
+            contenu = ["👋 Tu n’as pas encore voté à ces sondages :\n"]
+            for question, url in sondages:
+                contenu.append(f"• **{question}** → [Voter ici]({url})")
+
+            message_final = "\n".join(contenu)
+
+            try:
+                await user.send(message_final)
+                logging.info(f"Rappel envoyé à {user} ({len(sondages)} sondages).")
+            except discord.Forbidden:
+                logging.warning(f"Impossible d’envoyer un DM à {user}.")
+
+    logging.info("✅ Envoi des rappels terminé.")
 
 @rappel_sondages.before_loop
 async def before_rappel():
