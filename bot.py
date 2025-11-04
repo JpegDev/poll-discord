@@ -5,6 +5,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord.ui import Button, View
+import logging
+logging.basicConfig(level=logging.INFO)
 
 # -------------------- Intents --------------------
 intents = discord.Intents.default()
@@ -41,7 +43,7 @@ async def init_db():
                 PRIMARY KEY (poll_id, user_id)
             );
         """)
-        print("✅ Tables vérifiées.")
+        logging.info("✅ Tables vérifiées.")
 
 # -------------------- Classes pour les boutons --------------------
 class PollButton(Button):
@@ -128,7 +130,7 @@ async def on_ready():
     db = await get_db()
     await init_db()
     await tree.sync()
-    print(f"✅ Connecté en tant que {bot.user}")
+    logging.info(f"✅ Connecté en tant que {bot.user}")
 
 # -------------------- Slash Command /poll --------------------
 @tree.command(name="poll", description="Créer un sondage avec jusqu'à 20 choix (boutons)")
@@ -212,9 +214,9 @@ async def poll(interaction: discord.Interaction,
     await interaction.followup.send(f"Sondage créé ici : {message.jump_url}")
 
 # -------------------- Rappel automatique --------------------
-@tasks.loop(hours=1)
+@tasks.loop(minutes=1)
 async def rappel_sondages():
-    print("📬 Envoi des rappels de sondages...")
+    logging.info("📬 Envoi des rappels de sondages...")
     async with db.acquire() as conn:
         polls = await conn.fetch("SELECT * FROM polls")
         for poll in polls:
