@@ -131,6 +131,7 @@ async def on_ready():
     await init_db()
     await tree.sync()
     logging.info(f"✅ Connecté en tant que {bot.user}")
+    rappel_sondages.start()
 
 # -------------------- Slash Command /poll --------------------
 @tree.command(name="poll", description="Créer un sondage avec jusqu'à 20 choix (boutons)")
@@ -214,7 +215,7 @@ async def poll(interaction: discord.Interaction,
     await interaction.followup.send(f"Sondage créé ici : {message.jump_url}")
 
 # -------------------- Rappel automatique --------------------
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=5)
 async def rappel_sondages():
     logging.info("📬 Envoi des rappels de sondages...")
     async with db.acquire() as conn:
