@@ -7,6 +7,7 @@ from discord.ext import commands, tasks
 from discord.ui import Button, View
 import logging
 from collections import defaultdict
+
 logging.basicConfig(level=logging.INFO)
 
 # -------------------- Intents --------------------
@@ -49,7 +50,12 @@ async def init_db():
 # -------------------- Classes pour les boutons --------------------
 class PollButton(Button):
     def __init__(self, label, emoji, poll_id, db):
-        super().__init__(label=label, style=discord.ButtonStyle.primary, emoji=emoji)
+        super().__init__(
+            label=label,
+            style=discord.ButtonStyle.primary,
+            emoji=emoji,
+            custom_id=f"poll_{poll_id}_{emoji}"  # ✅ ID unique pour persistent
+        )
         self.poll_id = poll_id
         self.db = db
 
@@ -84,12 +90,13 @@ class PollButton(Button):
         async with self.db.acquire() as conn:
             poll = await conn.fetchrow("SELECT * FROM polls WHERE id=$1", self.poll_id)
             votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", self.poll_id)
+
         voted_user_ids = set()
         results = {}
         for v in votes:
             results.setdefault(v["emoji"], []).append(v["user_id"])
             voted_user_ids.add(v["user_id"])
-        
+
         channel = interaction.channel
         guild = channel.guild
         non_voters = [
@@ -98,6 +105,7 @@ class PollButton(Button):
             and m.id not in voted_user_ids
             and channel.permissions_for(m).read_messages
         ]
+
         emojis = [chr(0x1F1E6 + i) for i in range(len(poll["options"]))]
         lines = [f"📊 **{poll['question']}**\n"]
         for i, opt in enumerate(poll["options"]):
@@ -108,12 +116,14 @@ class PollButton(Button):
                 lines.append(f"{emoji} **{opt}** ({len(voters)} votes): {mentions}")
             else:
                 lines.append(f"{emoji} **{opt}** (0 vote)")
+
         # Ajouter les non-votants
         if non_voters:
             mentions_non_voters = ", ".join(f"<@{m.id}>" for m in non_voters)
             lines.append(f"\n👥 **Non-votants ({len(non_voters)})** : {mentions_non_voters}")
         else:
             lines.append(f"\n👥 **Non-votants** : 0")
+
         new_content = "\n".join(lines)
 
         await interaction.message.edit(
@@ -122,12 +132,14 @@ class PollButton(Button):
         )
         await interaction.response.defer()
 
+
 class PollView(View):
     def __init__(self, poll_id, options, db):
-        super().__init__(timeout=None)
-        emojis = [chr(0x1F1E6 + i) for i in range(len(options))]
-        for emoji, opt in zip(emojis, options):
+        super().__init__(timeout=None)  # Timeout None pour persistant
+        for i, opt in enumerate(options):
+            emoji = chr(0x1F1E6 + i)
             self.add_item(PollButton(label=opt, emoji=emoji, poll_id=poll_id, db=db))
+
 
 # -------------------- Bot Ready --------------------
 @bot.event
@@ -137,7 +149,24 @@ async def on_ready():
     await init_db()
     await tree.sync()
     logging.info(f"✅ Connecté en tant que {bot.user}")
+
+    # Recharger les Views persistantes pour tous les sondages existants
+    async with db.acquire() as conn:
+        polls = await conn.fetch("SELECT * FROM polls")
+        for poll in polls:
+            channel = bot.get_channel(poll["channel_id"])
+            if not channel:
+                continue
+            try:
+                message = await channel.fetch_message(poll["message_id"])
+            except discord.NotFound:
+                continue
+
+            view = PollView(poll["id"], poll["options"], db)
+            bot.add_view(view, message_id=message.id)  # 🔑 Attache la view persistante
+
     rappel_sondages.start()
+
 
 # -------------------- Slash Command /poll --------------------
 @tree.command(name="poll", description="Créer un sondage avec jusqu'à 20 choix (boutons)")
@@ -214,11 +243,13 @@ async def poll(interaction: discord.Interaction,
         )
         poll_id = poll_record["id"]
 
-    # Ajouter les boutons
+    # Ajouter les boutons persistants
     view = PollView(poll_id, options, db)
     await message.edit(view=view)
+    bot.add_view(view, message_id=message.id)  # 🔑 Attache la view pour persistance
 
     await interaction.followup.send(f"Sondage créé ici : {message.jump_url}")
+
 
 # -------------------- Rappel automatique --------------------
 @tasks.loop(minutes=5)
@@ -230,7 +261,6 @@ async def rappel_sondages():
             logging.info("Aucun sondage trouvé.")
             return
 
-        # Dictionnaire : {user_id: [liste de sondages non votés]}
         rappels_utilisateurs = defaultdict(list)
 
         for poll in polls:
@@ -250,7 +280,6 @@ async def rappel_sondages():
             voter_ids = {v["user_id"] for v in votes_data}
 
             for member in guild.members:
-                # ⚙️ Filtrer : bots, votants, et ceux sans accès au salon
                 if (
                     member.bot
                     or member.id in voter_ids
@@ -258,22 +287,18 @@ async def rappel_sondages():
                 ):
                     continue
 
-                # Si choix multiple, rappeler uniquement s’il n’y a aucun vote du tout
                 if choix_multiple and voter_ids:
                     continue
 
-                # Ajouter ce sondage à la liste de rappels de l'utilisateur
                 rappels_utilisateurs[member.id].append(
                     (poll["question"], message.jump_url)
                 )
 
-        # 🔔 Envoi d’un seul message par utilisateur
         for user_id, sondages in rappels_utilisateurs.items():
             user = bot.get_user(user_id)
             if not user:
                 continue
 
-            # Construire le message unique
             contenu = ["👋 Tu n’as pas encore voté à ces sondages :\n"]
             for question, url in sondages:
                 contenu.append(f"• **{question}** → [Voter ici]({url})")
@@ -288,9 +313,11 @@ async def rappel_sondages():
 
     logging.info("✅ Envoi des rappels terminé.")
 
+
 @rappel_sondages.before_loop
 async def before_rappel():
     await bot.wait_until_ready()
+
 
 # -------------------- Démarrage --------------------
 bot.run(os.getenv("TOKEN_DISCORD"))
