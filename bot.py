@@ -108,7 +108,12 @@ class PollButton(Button):
                 lines.append(f"{emoji} **{opt}** ({len(voters)} votes): {mentions}")
             else:
                 lines.append(f"{emoji} **{opt}** (0 vote)")
-        lines.append(f"\n👥 **Non-votants** : {len(non_voters)}")
+        # Ajouter les non-votants
+        if non_voters:
+            mentions_non_voters = ", ".join(f"<@{m.id}>" for m in non_voters)
+            lines.append(f"\n👥 **Non-votants ({len(non_voters)})** : {mentions_non_voters}")
+        else:
+            lines.append(f"\n👥 **Non-votants** : 0")
         new_content = "\n".join(lines)
 
         await interaction.message.edit(
