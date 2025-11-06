@@ -252,7 +252,7 @@ async def poll(interaction: discord.Interaction,
 
 
 # -------------------- Rappel automatique --------------------
-@tasks.loop(minutes=5)
+@tasks.loop(hours=24)
 async def rappel_sondages():
     logging.info("📬 Envoi des rappels de sondages...")
     async with db.acquire() as conn:
