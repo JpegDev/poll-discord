@@ -127,7 +127,7 @@ class PollButton(Button):
         new_content = "\n".join(lines)
 
         await interaction.message.edit(
-            content=new_content,
+            content=new_content+ "\n",
             embeds=[],
             allowed_mentions=discord.AllowedMentions(users=True)
         )
