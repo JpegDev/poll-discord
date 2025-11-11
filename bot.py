@@ -113,16 +113,16 @@ class PollButton(Button):
             voters = results.get(emoji, [])
             if voters:
                 mentions = ", ".join(f"<@{uid}>" for uid in voters)
-                lines.append(f"{emoji} **{opt}** ({len(voters)} votes): {mentions}")
+                lines.append(f"{emoji} **{opt}** ({len(voters)} votes): {mentions}\n")
             else:
-                lines.append(f"{emoji} **{opt}** (0 vote)")
+                lines.append(f"{emoji} **{opt}** (0 vote)\n")
 
         # Ajouter les non-votants
         if non_voters:
             mentions_non_voters = ", ".join(f"<@{m.id}>" for m in non_voters)
-            lines.append(f"\n👥 **Non-votants ({len(non_voters)})** : {mentions_non_voters}")
+            lines.append(f"\n👥 **Non-votants ({len(non_voters)})** : {mentions_non_voters}\n")
         else:
-            lines.append(f"\n👥 **Non-votants** : 0")
+            lines.append(f"\n👥 **Non-votants** : 0\n")
 
         new_content = "\n".join(lines)
 
