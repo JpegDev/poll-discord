@@ -124,10 +124,10 @@ class PollButton(Button):
         else:
             lines.append(f"\n👥 **Non-votants** : 0\n")
 
-        new_content = "\n".join(lines)
+        new_content = "\n".join(lines)+ " \n "
 
         await interaction.message.edit(
-            content=new_content+ "\n",
+            content=new_content,
             embeds=[],
             allowed_mentions=discord.AllowedMentions(users=True)
         )
