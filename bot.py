@@ -124,7 +124,7 @@ class PollButton(Button):
         else:
             lines.append(f"\n👥 **Non-votants** : 0\n")
 
-        new_content = "\n".join(lines)+ " \n "
+        new_content = "\n".join(lines)+ "\n\u200b"
 
         await interaction.message.edit(
             content=new_content,
