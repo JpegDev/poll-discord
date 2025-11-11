@@ -128,6 +128,7 @@ class PollButton(Button):
 
         await interaction.message.edit(
             content=new_content,
+            embeds=[],
             allowed_mentions=discord.AllowedMentions(users=True)
         )
         await interaction.response.defer()
