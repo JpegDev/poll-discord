@@ -8,7 +8,7 @@ from discord.ui import Button, View
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo  # 🇫🇷 Gestion fuseau horaire France
+from zoneinfo import ZoneInfo  # 🇫🇷 Gestion de la France
 
 logging.basicConfig(level=logging.INFO)
 
@@ -48,6 +48,7 @@ async def init_db():
             );
         """)
         logging.info("✅ Tables vérifiées.")
+
 
 # -------------------- Classes pour les boutons --------------------
 class PollButton(Button):
@@ -102,8 +103,7 @@ class PollButton(Button):
         guild = channel.guild
         non_voters = [
             m for m in guild.members
-            if not m.bot
-            and m.id not in voted_user_ids
+            if not m.bot and m.id not in voted_user_ids
             and channel.permissions_for(m).read_messages
         ]
 
@@ -119,15 +119,13 @@ class PollButton(Button):
                 lines.append(f"{emoji} **{opt}** (0 vote)\n")
 
         if non_voters:
-            mentions_non_voters = ", ".join(f"<@{m.id}>" for m in non_voters)
-            lines.append(f"\n👥 **Non-votants ({len(non_voters)})** : {mentions_non_voters}\n")
+            mentions = ", ".join(f"<@{m.id}>" for m in non_voters)
+            lines.append(f"\n👥 **Non-votants ({len(non_voters)})** : {mentions}\n")
         else:
-            lines.append(f"\n👥 **Non-votants** : 0\n")
-
-        new_content = "\n".join(lines) + "\n\u200b"
+            lines.append("\n👥 **Non-votants** : 0\n")
 
         await interaction.message.edit(
-            content=new_content,
+            content="\n".join(lines) + "\n\u200b",
             embeds=[],
             allowed_mentions=discord.AllowedMentions(users=True)
         )
@@ -139,7 +137,7 @@ class PollView(View):
         super().__init__(timeout=None)
         for i, opt in enumerate(options):
             emoji = chr(0x1F1E6 + i)
-            self.add_item(PollButton(label=opt, emoji=emoji, poll_id=poll_id, db=db))
+            self.add_item(PollButton(opt, emoji, poll_id, db))
 
 
 # -------------------- Bot Ready --------------------
@@ -162,11 +160,10 @@ async def on_ready():
             except discord.NotFound:
                 continue
 
-            view = PollView(poll["id"], poll["options"], db)
-            bot.add_view(view, message_id=message.id)
+            bot.add_view(PollView(poll["id"], poll["options"], db), message_id=poll["message_id"])
 
-    bot.loop.create_task(rappel_sondages_scheduler())  # ⭐ Nouveau scheduler
-    logging.info("📌 Scheduler des rappels lancé.")
+    bot.loop.create_task(rappel_sondages_scheduler())
+    logging.info("⏳ Scheduler des rappels lancé")
 
 
 # -------------------- Slash Command /poll --------------------
@@ -175,48 +172,62 @@ async def poll(interaction: discord.Interaction,
                question: str,
                choix1: str,
                choix2: str,
-               *args):
-    options = [choix1, choix2] + [c for c in args if c is not None]
+               choix3: str | None = None,
+               choix4: str | None = None,
+               choix5: str | None = None,
+               choix6: str | None = None,
+               choix7: str | None = None,
+               choix8: str | None = None,
+               choix9: str | None = None,
+               choix10: str | None = None,
+               choix11: str | None = None,
+               choix12: str | None = None,
+               choix13: str | None = None,
+               choix14: str | None = None,
+               choix15: str | None = None,
+               choix16: str | None = None,
+               choix17: str | None = None,
+               choix18: str | None = None,
+               choix19: str | None = None,
+               choix20: str | None = None):
+
+    options = [c for c in [
+        choix1, choix2, choix3, choix4, choix5, choix6, choix7, choix8, choix9, choix10,
+        choix11, choix12, choix13, choix14, choix15, choix16, choix17, choix18, choix19, choix20
+    ] if c]
 
     if len(options) < 2:
-        return await interaction.response.send_message("❌ Il faut au moins deux options.", ephemeral=True)
-
-    emojis = [chr(0x1F1E6 + i) for i in range(len(options))]
-    description = "\n".join(f"{emojis[i]} {opt}" for i, opt in enumerate(options))
+        return await interaction.response.send_message("❌ Il faut au moins 2 options.", ephemeral=True)
 
     embed = discord.Embed(
         title="📊 Sondage",
-        description=f"**{question}**\n\n{description}",
+        description=f"**{question}**\n\n" + "\n".join(
+            f"{chr(0x1F1E6+i)} {opt}" for i, opt in enumerate(options)
+        ),
         color=discord.Color.blurple()
     )
-    embed.set_footer(text=f"Créé par {interaction.user.display_name}")
 
-    await interaction.response.defer()
+    await interaction.response.send_message("⏳ Création du sondage...", ephemeral=True)
     message = await interaction.channel.send(embed=embed)
 
     async with db.acquire() as conn:
-        poll_record = await conn.fetchrow(
-            "INSERT INTO polls (message_id, channel_id, question, options) VALUES ($1, $2, $3, $4) RETURNING id",
+        poll_id = (await conn.fetchrow(
+            "INSERT INTO polls (message_id, channel_id, question, options) VALUES ($1,$2,$3,$4) RETURNING id",
             message.id, interaction.channel.id, question, options
-        )
-        poll_id = poll_record["id"]
+        ))["id"]
 
     view = PollView(poll_id, options, db)
     await message.edit(view=view)
-    bot.add_view(view, message_id=message.id)
 
-    await interaction.followup.send(f"Sondage créé ici : {message.jump_url}")
+    await interaction.followup.send(f"Sondage créé → {message.jump_url}", ephemeral=True)
 
 
-# -------------------- Fonction d'envoi des rappels --------------------
+# -------------------- Rappels automatiques --------------------
 async def rappel_sondages():
     logging.info("📬 Envoi des rappels...")
     async with db.acquire() as conn:
         polls = await conn.fetch("SELECT * FROM polls")
-        if not polls:
-            return
-
-        rappels_utilisateurs = defaultdict(list)
+        rappels = defaultdict(list)
 
         for poll in polls:
             channel = bot.get_channel(poll["channel_id"])
@@ -229,52 +240,47 @@ async def rappel_sondages():
                 continue
 
             guild = channel.guild
-            votes_data = await conn.fetch("SELECT user_id FROM votes WHERE poll_id=$1", poll["id"])
-            voter_ids = {v["user_id"] for v in votes_data}
+            vote_ids = {row["user_id"] for row in await conn.fetch(
+                "SELECT user_id FROM votes WHERE poll_id=$1", poll["id"]
+            )}
 
             for member in guild.members:
-                if member.bot or member.id in voter_ids:
+                if member.bot or member.id in vote_ids:
                     continue
-                if not channel.permissions_for(member).read_messages:
-                    continue
+                if channel.permissions_for(member).read_messages:
+                    rappels[member.id].append((poll["question"], message.jump_url))
 
-                rappels_utilisateurs[member.id].append((poll["question"], message.jump_url))
-
-        for user_id, sondages in rappels_utilisateurs.items():
-            user = bot.get_user(user_id)
+        for uid, items in rappels.items():
+            user = bot.get_user(uid)
             if not user:
                 continue
-
-            contenu = ["👋 Tu n’as pas encore voté :\n"]
-            contenu += [f"• **{q}** → {url}" for q, url in sondages]
-
             try:
-                await user.send("\n".join(contenu))
-                logging.info(f"📨 Rappel envoyé à {user}")
-            except discord.Forbidden:
+                await user.send(
+                    "👋 Tu n’as pas encore voté :\n" +
+                    "\n".join(f"• **{q}** → {u}" for q, u in items)
+                )
+            except:
                 pass
 
 
-# -------------------- Scheduler 🇫🇷 Toutes les 48h à 19h --------------------
+# -------------------- Toutes les 48h à 19h 🇫🇷 --------------------
 async def rappel_sondages_scheduler():
     await bot.wait_until_ready()
-    logging.info("⏳ Scheduler en attente du prochain 19h France...")
+    tz_fr = ZoneInfo("Europe/Paris")
 
     while not bot.is_closed():
-        tz_fr = ZoneInfo("Europe/Paris")
         now = datetime.now(tz_fr)
-
         next_run = now.replace(hour=19, minute=0, second=0, microsecond=0)
         if next_run <= now:
             next_run += timedelta(days=1)
 
-        wait_seconds = (next_run - now).total_seconds()
-        logging.info(f"📌 Prochain rappel → {next_run} ({wait_seconds/3600:.1f}h)")
+        wait = (next_run - now).total_seconds()
+        logging.info(f"⏱️ Prochain rappel : {next_run}")
 
-        await asyncio.sleep(wait_seconds)
+        await asyncio.sleep(wait)
         await rappel_sondages()
-        await asyncio.sleep(48 * 3600)  # 48h d’intervalle
+        await asyncio.sleep(48 * 3600)
 
 
-# -------------------- Démarrage du bot --------------------
+# -------------------- Run Bot --------------------
 bot.run(os.getenv("TOKEN_DISCORD"))
