@@ -7,6 +7,8 @@ from discord.ext import commands, tasks
 from discord.ui import Button, View
 import logging
 from collections import defaultdict
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo  # 🇫🇷 Gestion fuseau horaire France
 
 logging.basicConfig(level=logging.INFO)
 
@@ -54,7 +56,7 @@ class PollButton(Button):
             label=label,
             style=discord.ButtonStyle.primary,
             emoji=emoji,
-            custom_id=f"poll_{poll_id}_{emoji}"  # ✅ ID unique pour persistent
+            custom_id=f"poll_{poll_id}_{emoji}"
         )
         self.poll_id = poll_id
         self.db = db
@@ -86,7 +88,6 @@ class PollButton(Button):
                     self.poll_id, user_id, emoji_str
                 )
 
-        # Récupérer tous les votes et le sondage
         async with self.db.acquire() as conn:
             poll = await conn.fetchrow("SELECT * FROM polls WHERE id=$1", self.poll_id)
             votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", self.poll_id)
@@ -117,14 +118,13 @@ class PollButton(Button):
             else:
                 lines.append(f"{emoji} **{opt}** (0 vote)\n")
 
-        # Ajouter les non-votants
         if non_voters:
             mentions_non_voters = ", ".join(f"<@{m.id}>" for m in non_voters)
             lines.append(f"\n👥 **Non-votants ({len(non_voters)})** : {mentions_non_voters}\n")
         else:
             lines.append(f"\n👥 **Non-votants** : 0\n")
 
-        new_content = "\n".join(lines)+ "\n\u200b"
+        new_content = "\n".join(lines) + "\n\u200b"
 
         await interaction.message.edit(
             content=new_content,
@@ -136,7 +136,7 @@ class PollButton(Button):
 
 class PollView(View):
     def __init__(self, poll_id, options, db):
-        super().__init__(timeout=None)  # Timeout None pour persistant
+        super().__init__(timeout=None)
         for i, opt in enumerate(options):
             emoji = chr(0x1F1E6 + i)
             self.add_item(PollButton(label=opt, emoji=emoji, poll_id=poll_id, db=db))
@@ -149,9 +149,8 @@ async def on_ready():
     db = await get_db()
     await init_db()
     await tree.sync()
-    logging.info(f"✅ Connecté en tant que {bot.user}")
+    logging.info(f"🟢 Connecté en tant que {bot.user}")
 
-    # Recharger les Views persistantes pour tous les sondages existants
     async with db.acquire() as conn:
         polls = await conn.fetch("SELECT * FROM polls")
         for poll in polls:
@@ -164,69 +163,27 @@ async def on_ready():
                 continue
 
             view = PollView(poll["id"], poll["options"], db)
-            bot.add_view(view, message_id=message.id)  # 🔑 Attache la view persistante
+            bot.add_view(view, message_id=message.id)
 
-    rappel_sondages.start()
+    bot.loop.create_task(rappel_sondages_scheduler())  # ⭐ Nouveau scheduler
+    logging.info("📌 Scheduler des rappels lancé.")
 
 
 # -------------------- Slash Command /poll --------------------
 @tree.command(name="poll", description="Créer un sondage avec jusqu'à 20 choix (boutons)")
-@app_commands.describe(
-    question="La question du sondage",
-    choix1="Option 1",
-    choix2="Option 2",
-    choix3="Option 3",
-    choix4="Option 4",
-    choix5="Option 5",
-    choix6="Option 6",
-    choix7="Option 7",
-    choix8="Option 8",
-    choix9="Option 9",
-    choix10="Option 10",
-    choix11="Option 11",
-    choix12="Option 12",
-    choix13="Option 13",
-    choix14="Option 14",
-    choix15="Option 15",
-    choix16="Option 16",
-    choix17="Option 17",
-    choix18="Option 18",
-    choix19="Option 19",
-    choix20="Option 20"
-)
 async def poll(interaction: discord.Interaction,
                question: str,
                choix1: str,
                choix2: str,
-               choix3: str | None = None,
-               choix4: str | None = None,
-               choix5: str | None = None,
-               choix6: str | None = None,
-               choix7: str | None = None,
-               choix8: str | None = None,
-               choix9: str | None = None,
-               choix10: str | None = None,
-               choix11: str | None = None,
-               choix12: str | None = None,
-               choix13: str | None = None,
-               choix14: str | None = None,
-               choix15: str | None = None,
-               choix16: str | None = None,
-               choix17: str | None = None,
-               choix18: str | None = None,
-               choix19: str | None = None,
-               choix20: str | None = None):
-    options = [c for c in [
-        choix1, choix2, choix3, choix4, choix5, choix6, choix7, choix8, choix9, choix10,
-        choix11, choix12, choix13, choix14, choix15, choix16, choix17, choix18, choix19, choix20
-    ] if c is not None]
+               *args):
+    options = [choix1, choix2] + [c for c in args if c is not None]
 
     if len(options) < 2:
-        await interaction.response.send_message("❌ Il faut au moins deux options.", ephemeral=True)
-        return
+        return await interaction.response.send_message("❌ Il faut au moins deux options.", ephemeral=True)
 
     emojis = [chr(0x1F1E6 + i) for i in range(len(options))]
     description = "\n".join(f"{emojis[i]} {opt}" for i, opt in enumerate(options))
+
     embed = discord.Embed(
         title="📊 Sondage",
         description=f"**{question}**\n\n{description}",
@@ -244,22 +201,19 @@ async def poll(interaction: discord.Interaction,
         )
         poll_id = poll_record["id"]
 
-    # Ajouter les boutons persistants
     view = PollView(poll_id, options, db)
     await message.edit(view=view)
-    bot.add_view(view, message_id=message.id)  # 🔑 Attache la view pour persistance
+    bot.add_view(view, message_id=message.id)
 
     await interaction.followup.send(f"Sondage créé ici : {message.jump_url}")
 
 
-# -------------------- Rappel automatique --------------------
-@tasks.loop(hours=24)
+# -------------------- Fonction d'envoi des rappels --------------------
 async def rappel_sondages():
-    logging.info("📬 Envoi des rappels de sondages...")
+    logging.info("📬 Envoi des rappels...")
     async with db.acquire() as conn:
         polls = await conn.fetch("SELECT * FROM polls")
         if not polls:
-            logging.info("Aucun sondage trouvé.")
             return
 
         rappels_utilisateurs = defaultdict(list)
@@ -275,50 +229,52 @@ async def rappel_sondages():
                 continue
 
             guild = channel.guild
-            choix_multiple = len(poll["options"]) > 2
-
             votes_data = await conn.fetch("SELECT user_id FROM votes WHERE poll_id=$1", poll["id"])
             voter_ids = {v["user_id"] for v in votes_data}
 
             for member in guild.members:
-                if (
-                    member.bot
-                    or member.id in voter_ids
-                    or not channel.permissions_for(member).read_messages
-                ):
+                if member.bot or member.id in voter_ids:
+                    continue
+                if not channel.permissions_for(member).read_messages:
                     continue
 
-                if choix_multiple and voter_ids:
-                    continue
-
-                rappels_utilisateurs[member.id].append(
-                    (poll["question"], message.jump_url)
-                )
+                rappels_utilisateurs[member.id].append((poll["question"], message.jump_url))
 
         for user_id, sondages in rappels_utilisateurs.items():
             user = bot.get_user(user_id)
             if not user:
                 continue
 
-            contenu = ["👋 Tu n’as pas encore voté à ces sondages :\n"]
-            for question, url in sondages:
-                contenu.append(f"• **{question}** → [Voter ici]({url})")
-
-            message_final = "\n".join(contenu)
+            contenu = ["👋 Tu n’as pas encore voté :\n"]
+            contenu += [f"• **{q}** → {url}" for q, url in sondages]
 
             try:
-                await user.send(message_final)
-                logging.info(f"Rappel envoyé à {user} ({len(sondages)} sondages).")
+                await user.send("\n".join(contenu))
+                logging.info(f"📨 Rappel envoyé à {user}")
             except discord.Forbidden:
-                logging.warning(f"Impossible d’envoyer un DM à {user}.")
-
-    logging.info("✅ Envoi des rappels terminé.")
+                pass
 
 
-@rappel_sondages.before_loop
-async def before_rappel():
+# -------------------- Scheduler 🇫🇷 Toutes les 48h à 19h --------------------
+async def rappel_sondages_scheduler():
     await bot.wait_until_ready()
+    logging.info("⏳ Scheduler en attente du prochain 19h France...")
+
+    while not bot.is_closed():
+        tz_fr = ZoneInfo("Europe/Paris")
+        now = datetime.now(tz_fr)
+
+        next_run = now.replace(hour=19, minute=0, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+
+        wait_seconds = (next_run - now).total_seconds()
+        logging.info(f"📌 Prochain rappel → {next_run} ({wait_seconds/3600:.1f}h)")
+
+        await asyncio.sleep(wait_seconds)
+        await rappel_sondages()
+        await asyncio.sleep(48 * 3600)  # 48h d’intervalle
 
 
-# -------------------- Démarrage --------------------
+# -------------------- Démarrage du bot --------------------
 bot.run(os.getenv("TOKEN_DISCORD"))
