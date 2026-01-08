@@ -59,6 +59,25 @@ async def init_db():
                 reminder_type TEXT
             );
         """)
+        await conn.execute("""
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='polls' AND column_name='event_date') THEN
+                    ALTER TABLE polls ADD COLUMN event_date TIMESTAMP WITH TIME ZONE;
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='polls' AND column_name='max_date') THEN
+                    ALTER TABLE polls ADD COLUMN max_date TIMESTAMP WITH TIME ZONE;
+                END IF;
+                
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='polls' AND column_name='is_presence_poll') THEN
+                    ALTER TABLE polls ADD COLUMN is_presence_poll BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $$;
+        """)
         logging.info("✅ Tables vérifiées.")
 
 # -------------------- Fonctions de parsing de dates --------------------
