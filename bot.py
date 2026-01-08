@@ -66,61 +66,124 @@ async def init_db():
                               WHERE table_name='polls' AND column_name='event_date') THEN
                     ALTER TABLE polls ADD COLUMN event_date TIMESTAMP WITH TIME ZONE;
                 END IF;
-                
+
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                               WHERE table_name='polls' AND column_name='max_date') THEN
                     ALTER TABLE polls ADD COLUMN max_date TIMESTAMP WITH TIME ZONE;
                 END IF;
-                
+
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                               WHERE table_name='polls' AND column_name='is_presence_poll') THEN
                     ALTER TABLE polls ADD COLUMN is_presence_poll BOOLEAN DEFAULT FALSE;
                 END IF;
             END $$;
         """)
+
+# -------------------- Views --------------------
+class PollView(View):
+    def __init__(self, poll_id: int, options: list):
+        super().__init__(timeout=None)
+        self.poll_id = poll_id
         
-        # Mettre à jour les anciens sondages sans event_date (les marquer comme expirés)
-        await conn.execute("""
-            UPDATE polls 
-            SET event_date = NOW() 
-            WHERE event_date IS NULL;
-        """)
-        logging.info("✅ Tables vérifiées.")
+        emojis = ["🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭", "🇮", "🇯",
+                  "🇰", "🇱", "🇲", "🇳", "🇴", "🇵", "🇶", "🇷", "🇸", "🇹"]
+        
+        for i, option in enumerate(options[:20]):
+            button = Button(
+                label=option,
+                emoji=emojis[i],
+                style=discord.ButtonStyle.primary,
+                custom_id=f"poll_{poll_id}_{emojis[i]}"
+            )
+            button.callback = self.make_callback(emojis[i])
+            self.add_item(button)
+    
+    def make_callback(self, emoji):
+        async def callback(interaction: discord.Interaction):
+            async with db.acquire() as conn:
+                existing = await conn.fetchrow(
+                    "SELECT emoji FROM votes WHERE poll_id=$1 AND user_id=$2",
+                    self.poll_id, interaction.user.id
+                )
+                
+                if existing and existing["emoji"] == emoji:
+                    await conn.execute(
+                        "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
+                        self.poll_id, interaction.user.id
+                    )
+                    await interaction.response.send_message("✅ Vote annulé", ephemeral=True)
+                else:
+                    await conn.execute("""
+                        INSERT INTO votes (poll_id, user_id, emoji) 
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (poll_id, user_id) 
+                        DO UPDATE SET emoji=$3
+                    """, self.poll_id, interaction.user.id, emoji)
+                    await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
+            
+            await update_poll_display(interaction.message, self.poll_id)
+        
+        return callback
 
-# -------------------- Fonctions de parsing de dates --------------------
-def parse_date(date_str: str) -> datetime:
-    """
-    Parse une date au format JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm
-    Retourne un datetime en timezone Paris
-    """
-    date_str = date_str.strip()
+class PresencePollView(View):
+    def __init__(self, poll_id: int):
+        super().__init__(timeout=None)
+        self.poll_id = poll_id
+        
+        # Bouton Présent
+        btn_yes = Button(label="Présent", emoji="✅", style=discord.ButtonStyle.success, custom_id=f"presence_{poll_id}_yes")
+        btn_yes.callback = self.make_callback("✅")
+        self.add_item(btn_yes)
+        
+        # Bouton En attente
+        btn_maybe = Button(label="En attente", emoji="⏳", style=discord.ButtonStyle.secondary, custom_id=f"presence_{poll_id}_maybe")
+        btn_maybe.callback = self.make_callback("⏳")
+        self.add_item(btn_maybe)
+        
+        # Bouton Absent
+        btn_no = Button(label="Absent", emoji="❌", style=discord.ButtonStyle.danger, custom_id=f"presence_{poll_id}_no")
+        btn_no.callback = self.make_callback("❌")
+        self.add_item(btn_no)
     
-    # Format avec heure
-    match = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4})-(\d{1,2}):(\d{2})', date_str)
-    if match:
-        day, month, year, hour, minute = map(int, match.groups())
-        return datetime(year, month, day, hour, minute, tzinfo=TZ_FR)
-    
-    # Format sans heure (on prend 23:59)
-    match = re.match(r'(\d{1,2})/(\d{1,2})/(\d{4})', date_str)
-    if match:
-        day, month, year = map(int, match.groups())
-        return datetime(year, month, day, 23, 59, tzinfo=TZ_FR)
-    
-    raise ValueError("Format invalide. Utilisez JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm")
+    def make_callback(self, emoji):
+        async def callback(interaction: discord.Interaction):
+            async with db.acquire() as conn:
+                existing = await conn.fetchrow(
+                    "SELECT emoji FROM votes WHERE poll_id=$1 AND user_id=$2",
+                    self.poll_id, interaction.user.id
+                )
+                
+                if existing and existing["emoji"] == emoji:
+                    await conn.execute(
+                        "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
+                        self.poll_id, interaction.user.id
+                    )
+                    await interaction.response.send_message("✅ Vote annulé", ephemeral=True)
+                else:
+                    await conn.execute("""
+                        INSERT INTO votes (poll_id, user_id, emoji) 
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (poll_id, user_id) 
+                        DO UPDATE SET emoji=$3
+                    """, self.poll_id, interaction.user.id, emoji)
+                    await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
+            
+            await update_poll_display(interaction.message, self.poll_id)
+        
+        return callback
 
-# -------------------- Modal pour saisie des dates --------------------
-class DateModal(Modal, title="📅 Configuration du sondage"):
-    event_date_input = TextInput(
-        label="Date de l'événement (obligatoire)",
-        placeholder="JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm (ex: 25/12/2024-20:00)",
+# -------------------- Modal --------------------
+class DateModal(Modal, title="📅 Dates de l'événement"):
+    event_date = TextInput(
+        label="Date de l'événement (JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm)",
+        placeholder="Ex: 25/12/2024 ou 25/12/2024-20:00",
         required=True,
         max_length=16
     )
     
-    max_date_input = TextInput(
+    max_date = TextInput(
         label="Date limite de vote (optionnel)",
-        placeholder="JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm",
+        placeholder="Ex: 24/12/2024-18:00",
         required=False,
         max_length=16
     )
@@ -133,355 +196,287 @@ class DateModal(Modal, title="📅 Configuration du sondage"):
     
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            event_date = parse_date(self.event_date_input.value)
+            # Parser event_date
+            event_str = self.event_date.value.strip()
+            if "-" in event_str:
+                event_dt = datetime.strptime(event_str, "%d/%m/%Y-%H:%M").replace(tzinfo=TZ_FR)
+            else:
+                event_dt = datetime.strptime(event_str, "%d/%m/%Y").replace(hour=0, minute=0, tzinfo=TZ_FR)
             
-            max_date = None
-            if self.max_date_input.value:
-                max_date = parse_date(self.max_date_input.value)
-                
-                # Vérifications
-                if max_date >= event_date:
-                    await interaction.response.send_message(
-                        "❌ La date limite de vote doit être avant la date de l'événement.",
-                        ephemeral=True
-                    )
+            # Parser max_date
+            max_dt = None
+            if self.max_date.value.strip():
+                max_str = self.max_date.value.strip()
+                if "-" in max_str:
+                    max_dt = datetime.strptime(max_str, "%d/%m/%Y-%H:%M").replace(tzinfo=TZ_FR)
+                else:
+                    max_dt = datetime.strptime(max_str, "%d/%m/%Y").replace(hour=23, minute=59, tzinfo=TZ_FR)
+            
+            # Validations
+            now = datetime.now(TZ_FR)
+            if event_dt < now:
+                await interaction.response.send_message("❌ La date de l'événement ne peut pas être dans le passé", ephemeral=True)
+                return
+            
+            if max_dt:
+                if max_dt < now:
+                    await interaction.response.send_message("❌ La date limite ne peut pas être dans le passé", ephemeral=True)
+                    return
+                if max_dt > event_dt:
+                    await interaction.response.send_message("❌ La date limite doit être avant la date de l'événement", ephemeral=True)
                     return
             
-            # Vérifier que les dates ne sont pas dans le passé
-            now = datetime.now(TZ_FR)
-            if event_date <= now:
-                await interaction.response.send_message(
-                    "❌ La date de l'événement doit être dans le futur.",
-                    ephemeral=True
-                )
-                return
-            
-            if max_date and max_date <= now:
-                await interaction.response.send_message(
-                    "❌ La date limite de vote doit être dans le futur.",
-                    ephemeral=True
-                )
-                return
-            
-            await interaction.response.defer()
-            
             # Créer le sondage
-            await create_poll_message(
-                interaction,
-                self.question,
-                self.options,
-                event_date,
-                max_date,
-                self.is_presence
-            )
+            await create_poll(interaction, self.question, self.options, self.is_presence, event_dt, max_dt)
             
-        except ValueError as e:
-            await interaction.response.send_message(f"❌ {str(e)}", ephemeral=True)
-        except Exception as e:
-            logging.error(f"Erreur dans DateModal: {e}")
-            await interaction.response.send_message(
-                "❌ Une erreur est survenue lors de la création du sondage.",
-                ephemeral=True
-            )
+        except ValueError:
+            await interaction.response.send_message("❌ Format de date invalide. Utilisez JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm", ephemeral=True)
 
-# -------------------- Classes pour les boutons --------------------
-class PollButton(Button):
-    def __init__(self, label, emoji, poll_id, db, is_presence=False):
-        super().__init__(
-            label=label,
-            style=discord.ButtonStyle.primary if not is_presence else (
-                discord.ButtonStyle.success if emoji == "✅" else
-                discord.ButtonStyle.secondary if emoji == "⏳" else
-                discord.ButtonStyle.danger
-            ),
-            emoji=emoji,
-            custom_id=f"poll_{poll_id}_{emoji}"
-        )
-        self.poll_id = poll_id
-        self.db = db
-        self.is_presence = is_presence
+# -------------------- Functions --------------------
+async def create_poll(interaction: discord.Interaction, question: str, options: list, is_presence: bool, event_date: datetime, max_date: datetime = None):
+    """Crée un sondage en base et envoie le message"""
+    
+    # Créer le message embed initial
+    if is_presence:
+        embed = discord.Embed(title=f"📊 {question}", color=discord.Color.green())
+        view = PresencePollView(0)  # ID temporaire
+    else:
+        embed = discord.Embed(title=f"📊 {question}", color=discord.Color.blue())
+        view = PollView(0, options)  # ID temporaire
+    
+    embed.description = "_Chargement..._"
+    
+    await interaction.response.send_message(embed=embed, view=view)
+    message = await interaction.original_response()
+    
+    # Enregistrer en base
+    async with db.acquire() as conn:
+        poll_id = await conn.fetchval("""
+            INSERT INTO polls (message_id, channel_id, question, options, is_presence_poll, event_date, max_date)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+        """, message.id, interaction.channel_id, question, options, is_presence, event_date, max_date)
+    
+    # Recréer la vue avec le bon ID
+    if is_presence:
+        view = PresencePollView(poll_id)
+    else:
+        view = PollView(poll_id, options)
+    
+    await update_poll_display(message, poll_id)
+    await message.edit(view=view)
 
-    async def callback(self, interaction: discord.Interaction):
-        # Vérifier que le vote est toujours possible
-        async with self.db.acquire() as conn:
-            poll = await conn.fetchrow("SELECT * FROM polls WHERE id=$1", self.poll_id)
-            
-        if not poll:
-            await interaction.response.send_message("❌ Sondage introuvable.", ephemeral=True)
-            return
-        
-        now = datetime.now(TZ_FR)
-        max_date = poll["max_date"]
-        
-        if max_date and now > max_date:
-            await interaction.response.send_message(
-                "❌ Le vote est terminé, la date limite est dépassée.",
-                ephemeral=True
-            )
-            return
-        
-        user_id = interaction.user.id
-        emoji_str = str(self.emoji)
-
-        async with self.db.acquire() as conn:
-            existing_vote = await conn.fetchrow(
-                "SELECT emoji FROM votes WHERE poll_id=$1 AND user_id=$2",
-                self.poll_id, user_id
-            )
-
-            if existing_vote:
-                if existing_vote["emoji"] == emoji_str:
-                    # Retirer le vote
-                    await conn.execute(
-                        "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
-                        self.poll_id, user_id
-                    )
-                else:
-                    # Changer le vote
-                    await conn.execute(
-                        "UPDATE votes SET emoji=$1 WHERE poll_id=$2 AND user_id=$3",
-                        emoji_str, self.poll_id, user_id
-                    )
-            else:
-                # Nouveau vote
-                await conn.execute(
-                    "INSERT INTO votes (poll_id, user_id, emoji) VALUES ($1, $2, $3)",
-                    self.poll_id, user_id, emoji_str
-                )
-
-        # Mettre à jour l'affichage
-        await update_poll_display(interaction.message, self.poll_id)
-        await interaction.response.defer()
-
-class PollView(View):
-    def __init__(self, poll_id, options, db, is_presence=False):
-        super().__init__(timeout=None)
-        
-        if is_presence:
-            # Bot de présence avec 3 boutons fixes
-            self.add_item(PollButton("Présent", "✅", poll_id, db, True))
-            self.add_item(PollButton("En attente", "⏳", poll_id, db, True))
-            self.add_item(PollButton("Absent", "❌", poll_id, db, True))
-        else:
-            # Bot classique avec choix personnalisés
-            for i, opt in enumerate(options):
-                emoji = chr(0x1F1E6 + i)
-                self.add_item(PollButton(opt, emoji, poll_id, db, False))
-
-# -------------------- Mise à jour de l'affichage --------------------
 async def update_poll_display(message: discord.Message, poll_id: int):
     """Met à jour l'affichage d'un sondage"""
     async with db.acquire() as conn:
         poll = await conn.fetchrow("SELECT * FROM polls WHERE id=$1", poll_id)
-        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll_id)
-
-    if not poll:
-        return
-
-    voted_user_ids = set()
-    results = {}
-    for v in votes:
-        results.setdefault(v["emoji"], []).append(v["user_id"])
-        voted_user_ids.add(v["user_id"])
-
-    channel = message.channel
-    guild = channel.guild
-    non_voters = [
-        m for m in guild.members
-        if not m.bot and m.id not in voted_user_ids
-        and channel.permissions_for(m).read_messages
-    ]
-    
-    # Filtrer les "en attente" pour le bot de présence
-    waiting_users = []
-    if poll["is_presence_poll"]:
-        waiting_users = results.get("⏳", [])
-        non_voters_and_waiting = [m for m in guild.members
-                                   if not m.bot
-                                   and (m.id not in voted_user_ids or m.id in waiting_users)
-                                   and channel.permissions_for(m).read_messages]
-    else:
-        non_voters_and_waiting = non_voters
-
-    # Construction du message
-    if poll["is_presence_poll"]:
-        # Affichage pour bot de présence
-        lines = [f"📊 **{poll['question']}**\n"]
+        if not poll:
+            return
         
-        emojis_map = {"✅": "Présent", "⏳": "En attente", "❌": "Absent"}
-        for emoji, label in emojis_map.items():
-            voters = results.get(emoji, [])
-            if voters:
-                mentions = ", ".join(f"<@{uid}>" for uid in voters)
-                lines.append(f"{emoji} **{label}** ({len(voters)}) : {mentions}\n")
+        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll_id)
+    
+    # Organiser les votes
+    vote_counts = defaultdict(list)
+    for vote in votes:
+        vote_counts[vote["emoji"]].append(vote["user_id"])
+    
+    # Construire l'embed
+    if poll["is_presence_poll"]:
+        embed = discord.Embed(title=f"📊 {poll['question']}", color=discord.Color.green())
+        
+        for emoji, label in [("✅", "Présent"), ("⏳", "En attente"), ("❌", "Absent")]:
+            users = vote_counts.get(emoji, [])
+            if users:
+                mentions = ", ".join([f"<@{uid}>" for uid in users])
+                embed.add_field(name=f"{emoji} {label} ({len(users)})", value=mentions, inline=False)
             else:
-                lines.append(f"{emoji} **{label}** (0)\n")
+                embed.add_field(name=f"{emoji} {label} (0)", value="_Aucun_", inline=False)
     else:
-        # Affichage pour bot classique
-        emojis = [chr(0x1F1E6 + i) for i in range(len(poll["options"]))]
-        lines = [f"📊 **{poll['question']}**\n"]
-        for i, opt in enumerate(poll["options"]):
+        embed = discord.Embed(title=f"📊 {poll['question']}", color=discord.Color.blue())
+        
+        emojis = ["🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭", "🇮", "🇯",
+                  "🇰", "🇱", "🇲", "🇳", "🇴", "🇵", "🇶", "🇷", "🇸", "🇹"]
+        
+        for i, option in enumerate(poll["options"]):
             emoji = emojis[i]
-            voters = results.get(emoji, [])
-            if voters:
-                mentions = ", ".join(f"<@{uid}>" for uid in voters)
-                lines.append(f"{emoji} **{opt}** ({len(voters)}) : {mentions}\n")
+            users = vote_counts.get(emoji, [])
+            if users:
+                mentions = ", ".join([f"<@{uid}>" for uid in users])
+                embed.add_field(name=f"{emoji} {option} ({len(users)})", value=mentions, inline=False)
             else:
-                lines.append(f"{emoji} **{opt}** (0)\n")
-
-    # Non-votants
-    if non_voters_and_waiting:
-        mentions = ", ".join(f"<@{m.id}>" for m in non_voters_and_waiting)
-        lines.append(f"\n👥 **Non-votants / En attente ({len(non_voters_and_waiting)})** : {mentions}\n")
+                embed.add_field(name=f"{emoji} {option} (0)", value="_Aucun_", inline=False)
+    
+    # Afficher les non-votants/en attente
+    guild = message.guild
+    channel = message.channel
+    
+    all_members = [m for m in guild.members if not m.bot and channel.permissions_for(m).read_messages]
+    voted_user_ids = set(v["user_id"] for v in votes)
+    
+    if poll["is_presence_poll"]:
+        waiting_user_ids = set(v["user_id"] for v in votes if v["emoji"] == "⏳")
+        non_voted_or_waiting = [m for m in all_members if m.id not in voted_user_ids or m.id in waiting_user_ids]
     else:
-        lines.append("\n👥 **Non-votants / En attente** : 0\n")
+        non_voted_or_waiting = [m for m in all_members if m.id not in voted_user_ids]
     
-    # Informations sur les dates
-    event_date = poll["event_date"]
-    max_date = poll["max_date"]
+    if non_voted_or_waiting:
+        mentions = ", ".join([m.mention for m in non_voted_or_waiting[:20]])
+        if len(non_voted_or_waiting) > 20:
+            mentions += f" _et {len(non_voted_or_waiting) - 20} autres..._"
+        
+        label = "👥 Non-votants / En attente" if poll["is_presence_poll"] else "👥 Non-votants"
+        embed.add_field(name=f"{label} ({len(non_voted_or_waiting)})", value=mentions, inline=False)
     
-    lines.append(f"\n📅 **Événement** : {event_date.strftime('%d/%m/%Y à %H:%M')}")
-    if max_date:
-        lines.append(f"⏰ **Date limite de vote** : {max_date.strftime('%d/%m/%Y à %H:%M')}")
+    # Afficher les dates
+    event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+    embed.add_field(name="📅 Événement", value=event_str, inline=True)
     
-    # Vérifier si le vote est terminé
+    if poll["max_date"]:
+        max_str = poll["max_date"].strftime("%d/%m/%Y à %H:%M")
+        embed.add_field(name="⏰ Date limite de vote", value=max_str, inline=True)
+    
+    # Vérifier si le sondage est fermé
     now = datetime.now(TZ_FR)
-    view = PollView(poll["id"], poll["options"], db, poll["is_presence_poll"])
+    if poll["max_date"] and now > poll["max_date"]:
+        embed.set_footer(text="🔒 Le vote est terminé")
     
-    if max_date and now > max_date:
-        lines.append("\n🔒 **Le vote est terminé**")
-        view = None  # Retirer les boutons
+    await message.edit(embed=embed)
 
-    await message.edit(
-        content="\n".join(lines) + "\n\u200b",
-        embeds=[],
-        view=view,
-        allowed_mentions=discord.AllowedMentions(users=True)
-    )
-
-# -------------------- Création du message de sondage --------------------
-async def create_poll_message(interaction: discord.Interaction, question: str,
-                              options: list, event_date: datetime,
-                              max_date: datetime | None, is_presence: bool):
-    """Crée le message du sondage dans le canal"""
+# -------------------- Restore Views --------------------
+async def restore_poll_views():
+    """Restaure les boutons interactifs après un redémarrage"""
+    await bot.wait_until_ready()
     
-    # Construire l'embed initial
-    if is_presence:
-        description = f"**{question}**\n\n✅ Présent\n⏳ En attente\n❌ Absent"
-    else:
-        description = f"**{question}**\n\n" + "\n".join(
-            f"{chr(0x1F1E6+i)} {opt}" for i, opt in enumerate(options)
-        )
-    
-    description += f"\n\n📅 **Événement** : {event_date.strftime('%d/%m/%Y à %H:%M')}"
-    if max_date:
-        description += f"\n⏰ **Date limite** : {max_date.strftime('%d/%m/%Y à %H:%M')}"
-
-    embed = discord.Embed(
-        title="📊 Nouveau sondage",
-        description=description,
-        color=discord.Color.blurple() if not is_presence else discord.Color.green()
-    )
-
-    message = await interaction.channel.send(embed=embed)
-
-    # Enregistrer dans la base de données
     async with db.acquire() as conn:
-        poll_id = (await conn.fetchrow(
-            """INSERT INTO polls (message_id, channel_id, question, options, event_date, max_date, is_presence_poll) 
-               VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
-            message.id, interaction.channel.id, question, options, event_date, max_date, is_presence
-        ))["id"]
-
-    # Ajouter les boutons
-    view = PollView(poll_id, options, db, is_presence)
-    await message.edit(embed=None, content=embed.description, view=view)
-
-    await interaction.followup.send(f"✅ Sondage créé → {message.jump_url}", ephemeral=True)
-
-# -------------------- Bot Ready --------------------
-@bot.event
-async def on_ready():
-    global db
-    db = await get_db()
-    await init_db()
-    await tree.sync()
-    logging.info(f"🟢 Connecté en tant que {bot.user}")
-
-    # Restaurer les vues des sondages existants
-    async with db.acquire() as conn:
-        polls = await conn.fetch("SELECT * FROM polls")
-        for poll in polls:
+        # Récupérer tous les sondages actifs (non fermés)
+        now = datetime.now(TZ_FR)
+        polls = await conn.fetch("""
+            SELECT * FROM polls 
+            WHERE max_date IS NULL OR max_date > $1
+        """, now)
+    
+    logging.info(f"🔄 Restauration de {len(polls)} sondages actifs...")
+    
+    for poll in polls:
+        try:
             channel = bot.get_channel(poll["channel_id"])
             if not channel:
                 continue
+            
             try:
                 message = await channel.fetch_message(poll["message_id"])
             except discord.NotFound:
+                logging.warning(f"Message {poll['message_id']} introuvable, nettoyage...")
+                async with db.acquire() as conn:
+                    await conn.execute("DELETE FROM polls WHERE id=$1", poll["id"])
                 continue
-
-            # Ne pas ajouter de vue si la date limite est dépassée
-            now = datetime.now(TZ_FR)
-            if poll["max_date"] and now > poll["max_date"]:
-                continue
-
-            bot.add_view(
-                PollView(poll["id"], poll["options"], db, poll["is_presence_poll"]),
-                message_id=poll["message_id"]
-            )
-
-    # Lancer le scheduler des rappels
-    bot.loop.create_task(reminder_scheduler())
-    logging.info("⏳ Scheduler des rappels lancé")
-
-# -------------------- Slash Command /poll --------------------
-@tree.command(name="poll", description="Créer un sondage personnalisé ou de présence")
-async def poll(interaction: discord.Interaction,
-               question: str = "Dispo ?",
-               choix1: str | None = None,
-               choix2: str | None = None,
-               choix3: str | None = None,
-               choix4: str | None = None,
-               choix5: str | None = None,
-               choix6: str | None = None,
-               choix7: str | None = None,
-               choix8: str | None = None,
-               choix9: str | None = None,
-               choix10: str | None = None,
-               choix11: str | None = None,
-               choix12: str | None = None,
-               choix13: str | None = None,
-               choix14: str | None = None,
-               choix15: str | None = None,
-               choix16: str | None = None,
-               choix17: str | None = None,
-               choix18: str | None = None,
-               choix19: str | None = None,
-               choix20: str | None = None):
-
-    options = [c for c in [
-        choix1, choix2, choix3, choix4, choix5, choix6, choix7, choix8, choix9, choix10,
-        choix11, choix12, choix13, choix14, choix15, choix16, choix17, choix18, choix19, choix20
-    ] if c]
-
-    # Déterminer le type de sondage
-    is_presence = len(options) == 0
+            
+            # Créer la vue appropriée
+            if poll["is_presence_poll"]:
+                view = PresencePollView(poll["id"])
+            else:
+                view = PollView(poll["id"], poll["options"])
+            
+            # Réattacher la vue au message
+            await message.edit(view=view)
+            logging.info(f"✅ Sondage #{poll['id']} restauré")
+            
+        except Exception as e:
+            logging.error(f"Erreur lors de la restauration du sondage {poll['id']}: {e}")
     
-    if not is_presence and len(options) < 2:
-        return await interaction.response.send_message(
-            "❌ Il faut soit laisser tous les choix vides (bot de présence), soit remplir au moins 2 choix.",
-            ephemeral=True
-        )
+    logging.info("✅ Tous les sondages ont été restaurés")
 
-    # Ouvrir le modal pour les dates
-    modal = DateModal(question, options, is_presence)
+# -------------------- Commands --------------------
+@tree.command(name="poll", description="Créer un sondage")
+@app_commands.describe(
+    question="La question du sondage",
+    choix1="Premier choix (laisser vide pour un sondage Présent/Absent/En attente)",
+    choix2="Deuxième choix",
+    choix3="Troisième choix",
+    choix4="Quatrième choix",
+    choix5="Cinquième choix",
+    choix6="Sixième choix",
+    choix7="Septième choix",
+    choix8="Huitième choix",
+    choix9="Neuvième choix",
+    choix10="Dixième choix",
+    choix11="Onzième choix",
+    choix12="Douzième choix",
+    choix13="Treizième choix",
+    choix14="Quatorzième choix",
+    choix15="Quinzième choix",
+    choix16="Seizième choix",
+    choix17="Dix-septième choix",
+    choix18="Dix-huitième choix",
+    choix19="Dix-neuvième choix",
+    choix20="Vingtième choix"
+)
+async def poll_command(
+    interaction: discord.Interaction,
+    question: str,
+    choix1: str = None,
+    choix2: str = None,
+    choix3: str = None,
+    choix4: str = None,
+    choix5: str = None,
+    choix6: str = None,
+    choix7: str = None,
+    choix8: str = None,
+    choix9: str = None,
+    choix10: str = None,
+    choix11: str = None,
+    choix12: str = None,
+    choix13: str = None,
+    choix14: str = None,
+    choix15: str = None,
+    choix16: str = None,
+    choix17: str = None,
+    choix18: str = None,
+    choix19: str = None,
+    choix20: str = None
+):
+    """Commande pour créer un sondage"""
+    choices = [choix1, choix2, choix3, choix4, choix5, choix6, choix7, choix8, choix9, choix10,
+               choix11, choix12, choix13, choix14, choix15, choix16, choix17, choix18, choix19, choix20]
+    options = [c for c in choices if c]
+    
+    # Si aucun choix → sondage de présence
+    if not options:
+        modal = DateModal(question, [], is_presence=True)
+        await interaction.response.send_modal(modal)
+        return
+    
+    # Si 1 seul choix → erreur
+    if len(options) < 2:
+        await interaction.response.send_message("❌ Il faut au moins 2 choix pour un sondage classique", ephemeral=True)
+        return
+    
+    # Sondage classique
+    modal = DateModal(question, options, is_presence=False)
     await interaction.response.send_modal(modal)
 
-# -------------------- Système de rappels --------------------
-async def send_reminders():
-    """Envoie les rappels aux utilisateurs n'ayant pas voté"""
-    logging.info("📬 Vérification des rappels à envoyer...")
+@tree.command(name="check_polls", description="Vérifie l'état des sondages actifs (admin)")
+@app_commands.checks.has_permissions(administrator=True)
+async def check_polls(interaction: discord.Interaction):
+    """Vérifie l'état des sondages actifs"""
+    async with db.acquire() as conn:
+        polls = await conn.fetch("SELECT * FROM polls")
     
+    if not polls:
+        await interaction.response.send_message("Aucun sondage en base", ephemeral=True)
+        return
+    
+    msg = "📊 **Sondages en base :**\n"
+    now = datetime.now(TZ_FR)
+    for p in polls:
+        status = "🟢 Actif" if not p["max_date"] or p["max_date"] > now else "🔴 Fermé"
+        msg += f"\n{status} ID:{p['id']} - {p['question'][:50]}"
+    
+    await interaction.response.send_message(msg, ephemeral=True)
+
+# -------------------- Reminders --------------------
+async def send_reminders():
+    """Envoie les rappels pour les sondages"""
     now = datetime.now(TZ_FR)
     
     async with db.acquire() as conn:
@@ -489,82 +484,96 @@ async def send_reminders():
             SELECT * FROM polls 
             WHERE event_date > $1
         """, now)
-        
-        for poll in polls:
-            # Vérifier si l'événement est passé
-            if poll["event_date"] <= now:
-                continue
+    
+    for poll in polls:
+        # Si date limite définie
+        if poll["max_date"]:
+            time_until_deadline = poll["max_date"] - now
             
-            # Vérifier si le vote est terminé
-            if poll["max_date"] and poll["max_date"] <= now:
-                # Envoyer message aux non-votants que c'est terminé
-                await send_vote_closed_messages(poll)
-                continue
-            
-            # Déterminer si on doit envoyer un rappel
-            should_send = False
-            reminder_type = ""
-            
-            if poll["max_date"]:
-                # Avec date butoir : rappels J-2 et J-1
-                days_until_deadline = (poll["max_date"] - now).days
-                
-                if days_until_deadline == 1:
-                    # Vérifier si rappel J-1 déjà envoyé
-                    last_reminder = await conn.fetchrow(
-                        "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='J-1'",
-                        poll["id"]
-                    )
-                    if not last_reminder:
-                        should_send = True
-                        reminder_type = "J-1"
-                        
-                elif days_until_deadline == 2:
-                    # Vérifier si rappel J-2 déjà envoyé
-                    last_reminder = await conn.fetchrow(
-                        "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='J-2'",
-                        poll["id"]
-                    )
-                    if not last_reminder:
-                        should_send = True
-                        reminder_type = "J-2"
-            else:
-                # Sans date butoir : rappel hebdomadaire
-                last_reminder = await conn.fetchrow(
-                    "SELECT * FROM reminders_sent WHERE poll_id=$1 ORDER BY sent_at DESC LIMIT 1",
+            # Rappel J-2
+            if timedelta(hours=47) <= time_until_deadline <= timedelta(hours=49):
+                already_sent = await db.fetchrow(
+                    "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='j-2'",
                     poll["id"]
                 )
-                
-                if not last_reminder:
-                    # Premier rappel (24h après création)
-                    if (now - poll["created_at"]).days >= 1:
-                        should_send = True
-                        reminder_type = "weekly"
-                else:
-                    # Rappel hebdomadaire
-                    if (now - last_reminder["sent_at"]).days >= 7:
-                        should_send = True
-                        reminder_type = "weekly"
+                if not already_sent:
+                    await send_reminder_to_non_voters(poll, "⏰ Plus que 2 jours avant la date limite de vote !")
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'j-2')",
+                            poll["id"]
+                        )
             
-            if should_send:
-                await send_poll_reminders(poll, reminder_type)
-                await conn.execute(
-                    "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, $2)",
-                    poll["id"], reminder_type
+            # Rappel J-1
+            elif timedelta(hours=23) <= time_until_deadline <= timedelta(hours=25):
+                already_sent = await db.fetchrow(
+                    "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='j-1'",
+                    poll["id"]
                 )
+                if not already_sent:
+                    await send_reminder_to_non_voters(poll, "⚠️ Dernier jour pour voter !")
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'j-1')",
+                            poll["id"]
+                        )
+            
+            # Fermeture du sondage
+            elif now > poll["max_date"]:
+                await close_poll(poll)
+        
+        else:
+            # Pas de date limite → rappels réguliers
+            creation_date = poll["created_at"].replace(tzinfo=TZ_FR)
+            time_since_creation = now - creation_date
+            
+            # Premier rappel après 24h
+            if timedelta(hours=23) <= time_since_creation <= timedelta(hours=25):
+                already_sent = await db.fetchrow(
+                    "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='first'",
+                    poll["id"]
+                )
+                if not already_sent:
+                    await send_reminder_to_non_voters(poll, "⏰ Rappel : n'oubliez pas de voter !")
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'first')",
+                            poll["id"]
+                        )
+            
+            # Rappels hebdomadaires
+            elif time_since_creation.days > 0 and time_since_creation.days % 7 == 0:
+                today_key = f"weekly_{now.date()}"
+                already_sent = await db.fetchrow(
+                    "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type=$2",
+                    poll["id"], today_key
+                )
+                if not already_sent:
+                    await send_reminder_to_non_voters(poll, "🔔 Rappel hebdomadaire : pensez à voter !")
+                    async with db.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, $2)",
+                            poll["id"], today_key
+                        )
 
-async def send_poll_reminders(poll, reminder_type: str):
-    """Envoie les rappels pour un sondage spécifique"""
+async def send_reminder_to_non_voters(poll, message_text):
+    """Envoie un rappel aux non-votants"""
+    guild = bot.get_guild(poll["guild_id"]) if "guild_id" in poll else None
+    if not guild:
+        # Trouver le guild via le channel
+        channel = bot.get_channel(poll["channel_id"])
+        if not channel:
+            return
+        guild = channel.guild
+    
     channel = bot.get_channel(poll["channel_id"])
     if not channel:
         return
     
     try:
         message = await channel.fetch_message(poll["message_id"])
-    except discord.NotFound:
+    except:
         return
-    
-    guild = channel.guild
     
     async with db.acquire() as conn:
         votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
@@ -577,73 +586,38 @@ async def send_poll_reminders(poll, reminder_type: str):
         if poll["is_presence_poll"] and v["emoji"] == "⏳":
             waiting_user_ids.add(v["user_id"])
     
-    # Liste des personnes à rappeler
-    to_remind = []
+    to_notify = []
     for member in guild.members:
         if member.bot:
             continue
         if not channel.permissions_for(member).read_messages:
             continue
         
-        # Pour bot de présence : rappeler non-votants ET en attente
         if poll["is_presence_poll"]:
             if member.id not in voted_user_ids or member.id in waiting_user_ids:
-                to_remind.append(member)
+                to_notify.append(member)
         else:
-            # Pour bot classique : rappeler seulement non-votants
             if member.id not in voted_user_ids:
-                to_remind.append(member)
+                to_notify.append(member)
     
-    if not to_remind:
-        return
-    
-    # Construire le message
     event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
     
-    if reminder_type == "J-1":
-        subject = f"⚠️ **Dernier jour** pour voter !"
-        deadline_info = f"Date limite : **demain** ({poll['max_date'].strftime('%d/%m/%Y à %H:%M')})"
-    elif reminder_type == "J-2":
-        subject = f"⏰ **2 jours** avant la date limite !"
-        deadline_info = f"Date limite : {poll['max_date'].strftime('%d/%m/%Y à %H:%M')}"
-    else:
-        subject = "📢 Rappel de vote"
-        deadline_info = ""
-    
-    # Envoi des MP
-    for member in to_remind:
+    for member in to_notify:
         try:
-            msg_parts = [
-                subject,
-                f"\n**{poll['question']}**",
-                f"📅 Événement : {event_date_str}"
-            ]
-            
-            if deadline_info:
-                msg_parts.append(deadline_info)
-            
-            if poll["is_presence_poll"] and member.id in waiting_user_ids:
-                msg_parts.append("\n⏳ Tu es actuellement en **attente**, pense à confirmer ta présence !")
-            else:
-                msg_parts.append("\n❓ Tu n'as pas encore voté !")
-            
-            msg_parts.append(f"\n👉 {message.jump_url}")
-            
-            await member.send("\n".join(msg_parts))
-        except discord.Forbidden:
-            logging.warning(f"Impossible d'envoyer un MP à {member.name}")
-        except Exception as e:
-            logging.error(f"Erreur lors de l'envoi du rappel à {member.name}: {e}")
+            msg = f"{message_text}\n\n**{poll['question']}**\n📅 Événement : {event_date_str}\n👉 {message.jump_url}"
+            await member.send(msg)
+        except:
+            pass
 
-async def send_vote_closed_messages(poll):
-    """Envoie un message aux non-votants/en attente quand le vote est terminé"""
+async def close_poll(poll):
+    """Ferme un sondage et notifie les non-votants"""
     channel = bot.get_channel(poll["channel_id"])
     if not channel:
         return
     
     try:
         message = await channel.fetch_message(poll["message_id"])
-    except discord.NotFound:
+    except:
         return
     
     guild = channel.guild
@@ -726,6 +700,22 @@ async def reminder_scheduler():
         
         # Vérifier toutes les heures
         await asyncio.sleep(3600)
+
+# -------------------- Events --------------------
+@bot.event
+async def on_ready():
+    global db
+    db = await get_db()
+    await init_db()
+    await tree.sync()
+    
+    # 🆕 RESTAURER LES VIEWS
+    await restore_poll_views()
+    
+    # Lancer le scheduler de rappels
+    bot.loop.create_task(reminder_scheduler())
+    
+    logging.info(f"✅ Bot connecté : {bot.user}")
 
 # -------------------- Run Bot --------------------
 bot.run(os.getenv("TOKEN_DISCORD"))
