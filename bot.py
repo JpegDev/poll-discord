@@ -78,6 +78,13 @@ async def init_db():
                 END IF;
             END $$;
         """)
+        
+        # Mettre à jour les anciens sondages sans event_date (les marquer comme expirés)
+        await conn.execute("""
+            UPDATE polls 
+            SET event_date = NOW() 
+            WHERE event_date IS NULL;
+        """)
         logging.info("✅ Tables vérifiées.")
 
 # -------------------- Fonctions de parsing de dates --------------------
