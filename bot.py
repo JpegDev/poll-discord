@@ -411,7 +411,7 @@ async def on_ready():
 # -------------------- Slash Command /poll --------------------
 @tree.command(name="poll", description="Créer un sondage personnalisé ou de présence")
 async def poll(interaction: discord.Interaction,
-               question: str,
+               question: str = "Dispo ?",
                choix1: str | None = None,
                choix2: str | None = None,
                choix3: str | None = None,
