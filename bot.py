@@ -175,7 +175,7 @@ class PresencePollView(View):
 # -------------------- Modal --------------------
 class DateModal(Modal, title="📅 Dates de l'événement"):
     event_date = TextInput(
-        label="Date de l'événement (JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm)",
+        label="Date événement (JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm)",
         placeholder="Ex: 25/12/2024 ou 25/12/2024-20:00",
         required=True,
         max_length=16
@@ -427,7 +427,7 @@ async def restore_poll_views():
 )
 async def poll_command(
     interaction: discord.Interaction,
-    question: str,
+    question: str = "Dispo?",
     choix1: str = None,
     choix2: str = None,
     choix3: str = None,
