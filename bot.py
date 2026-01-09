@@ -494,102 +494,138 @@ async def check_polls(interaction: discord.Interaction):
 
 # -------------------- Reminders --------------------
 async def send_reminders():
-    """Envoie les rappels pour les sondages"""
+    """Envoie les rappels appropriés selon le type de sondage et la situation"""
     now = datetime.now(TZ_FR)
 
     async with db.acquire() as conn:
-        polls = await conn.fetch("""
-            SELECT * FROM polls 
-            WHERE event_date > $1
-        """, now)
+        polls = await conn.fetch("SELECT * FROM polls")
 
     for poll in polls:
-        # Si date limite définie
-        if poll["max_date"]:
-            time_until_deadline = poll["max_date"] - now
+        await check_and_send_reminders(poll, now)
 
-            # Rappel J-2
-            if timedelta(hours=47) <= time_until_deadline <= timedelta(hours=49):
+
+async def check_and_send_reminders(poll, now):
+    """Vérifie et envoie les rappels pour un sondage donné"""
+    
+    # 1. Fermeture du sondage si max_date dépassée
+    if poll["max_date"] and now >= poll["max_date"]:
+        await close_poll(poll)
+        return
+
+    # 2. Rappels pour sondages AVEC max_date
+    if poll["max_date"]:
+        time_until_deadline = poll["max_date"] - now
+
+        # Rappel J-2 (48h avant) pour les personnes en attente
+        if timedelta(hours=47) <= time_until_deadline <= timedelta(hours=49):
+            async with db.acquire() as conn:
+                already_sent = await conn.fetchrow(
+                    "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='j_minus_2_waiting'",
+                    poll["id"]
+                )
+            
+            if not already_sent:
+                await send_waiting_reminder(poll, "⏰ **Rappel : Plus que 2 jours !**\n\nTu es toujours en attente pour ce sondage.")
                 async with db.acquire() as conn:
-                    already_sent = await conn.fetchrow(
-                        "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='j-2'",
+                    await conn.execute(
+                        "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'j_minus_2_waiting')",
                         poll["id"]
                     )
-                if not already_sent:
-                    await send_reminder_to_non_voters(poll, "⏰ Plus que 2 jours avant la date limite de vote !")
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'j-2')",
-                            poll["id"]
-                        )
 
-            # Rappel J-1
-            elif timedelta(hours=23) <= time_until_deadline <= timedelta(hours=25):
+        # Rappel J-1 (24h avant) pour les personnes en attente
+        elif timedelta(hours=23) <= time_until_deadline <= timedelta(hours=25):
+            async with db.acquire() as conn:
+                already_sent = await conn.fetchrow(
+                    "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='j_minus_1_waiting'",
+                    poll["id"]
+                )
+            
+            if not already_sent:
+                await send_waiting_reminder(poll, "🔔 **Rappel : Dernier jour !**\n\nTu es toujours en attente. Confirme ta présence avant la date limite !")
                 async with db.acquire() as conn:
-                    already_sent = await conn.fetchrow(
-                        "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='j-1'",
+                    await conn.execute(
+                        "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'j_minus_1_waiting')",
                         poll["id"]
                     )
-                if not already_sent:
-                    await send_reminder_to_non_voters(poll, "⚠️ Dernier jour pour voter !")
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'j-1')",
-                            poll["id"]
-                        )
 
-            # Fermeture du sondage
-            elif now > poll["max_date"]:
-                await close_poll(poll)
+    # 3. Rappels pour sondages SANS max_date
+    else:
+        poll_age = now - poll["created_at"].replace(tzinfo=TZ_FR)
 
-        else:
-            # Pas de date limite → rappels réguliers
-            creation_date = poll["created_at"].replace(tzinfo=TZ_FR)
-            time_since_creation = now - creation_date
-
-            # Premier rappel après 24h
-            if timedelta(hours=23) <= time_since_creation <= timedelta(hours=25):
-                async with db.acquire() as conn:
-                    already_sent = await conn.fetchrow(
-                        "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type='first'",
-                        poll["id"]
-                    )
-                if not already_sent:
-                    await send_reminder_to_non_voters(poll, "⏰ Rappel : n'oubliez pas de voter !")
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, 'first')",
-                            poll["id"]
-                        )
-
-            # Rappels hebdomadaires
-            elif time_since_creation.days > 0 and time_since_creation.days % 7 == 0:
-                today_key = f"weekly_{now.date()}"
+        # Rappel hebdomadaire pour les personnes en attente (sondage de présence)
+        if poll["is_presence_poll"]:
+            weeks_since_creation = int(poll_age.days / 7)
+            
+            for week in range(1, weeks_since_creation + 1):
                 async with db.acquire() as conn:
                     already_sent = await conn.fetchrow(
                         "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type=$2",
-                        poll["id"], today_key
+                        poll["id"], f"weekly_waiting_{week}"
                     )
+                
                 if not already_sent:
-                    await send_reminder_to_non_voters(poll, "🔔 Rappel hebdomadaire : pensez à voter !")
-                    async with db.acquire() as conn:
-                        await conn.execute(
-                            "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, $2)",
-                            poll["id"], today_key
-                        )
+                    target_week_date = poll["created_at"].replace(tzinfo=TZ_FR) + timedelta(weeks=week)
+                    
+                    # Vérifier si on est dans la fenêtre de 1 heure autour de 19h du jour cible
+                    if target_week_date.date() == now.date() and 18 <= now.hour <= 20:
+                        await send_waiting_reminder(poll, f"📅 **Rappel hebdomadaire**\n\nTu es toujours en attente. Peux-tu confirmer ta présence ?")
+                        async with db.acquire() as conn:
+                            await conn.execute(
+                                "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, $2)",
+                                poll["id"], f"weekly_waiting_{week}"
+                            )
 
-async def send_reminder_to_non_voters(poll, message_text):
-    """Envoie un rappel aux non-votants"""
+
+async def send_waiting_reminder(poll, message_text):
+    """Envoie un rappel uniquement aux personnes en attente (⏳)"""
     channel = bot.get_channel(poll["channel_id"])
     if not channel:
         return
-
-    guild = channel.guild
 
     try:
         message = await channel.fetch_message(poll["message_id"])
     except:
         return
+
+    guild = channel.guild
+
+    async with db.acquire() as conn:
+        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
+
+    waiting_user_ids = set()
+    for v in votes:
+        if v["emoji"] == "⏳":
+            waiting_user_ids.add(v["user_id"])
+
+    if not waiting_user_ids:
+        return
+
+    event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+
+    for user_id in waiting_user_ids:
+        try:
+            member = guild.get_member(user_id)
+            if not member or member.bot:
+                continue
+
+            msg = f"{message_text}\n\n**{poll['question']}**\n📅 Événement : {event_date_str}\n👉 {message.jump_url}"
+            await member.send(msg)
+        except:
+            pass
+
+
+async def send_non_voters_reminder(poll, message_text):
+    """Envoie un rappel aux non-votants ET aux personnes en attente"""
+    channel = bot.get_channel(poll["channel_id"])
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(poll["message_id"])
+    except:
+        return
+
+    guild = channel.guild
 
     async with db.acquire() as conn:
         votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
@@ -625,6 +661,7 @@ async def send_reminder_to_non_voters(poll, message_text):
             await member.send(msg)
         except:
             pass
+
 
 async def close_poll(poll):
     """Ferme un sondage et notifie les non-votants"""
@@ -703,6 +740,7 @@ async def close_poll(poll):
             poll["id"]
         )
 
+
 async def reminder_scheduler():
     """Scheduler qui vérifie régulièrement s'il faut envoyer des rappels"""
     await bot.wait_until_ready()
@@ -715,6 +753,68 @@ async def reminder_scheduler():
 
         # Vérifier toutes les heures
         await asyncio.sleep(3600)
+
+async def daily_19h_scheduler():
+    """Scheduler qui s'exécute tous les jours à 19h pour envoyer les rappels aux non-votants"""
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        try:
+            now = datetime.now(TZ_FR)
+            
+            # Calculer le prochain 19h
+            target = now.replace(hour=19, minute=0, second=0, microsecond=0)
+            if now.hour >= 19:
+                target += timedelta(days=1)
+            
+            # Attendre jusqu'à 19h
+            wait_seconds = (target - now).total_seconds()
+            logging.info(f"⏰ Prochain rappel quotidien dans {wait_seconds/3600:.1f}h ({target})")
+            await asyncio.sleep(wait_seconds)
+            
+            # Envoyer les rappels pour les non-votants (tous les 2 jours)
+            await send_non_voters_biweekly_reminders()
+            
+        except Exception as e:
+            logging.error(f"Erreur dans le scheduler quotidien: {e}")
+            await asyncio.sleep(3600)
+
+
+async def send_non_voters_biweekly_reminders():
+    """Envoie un rappel aux non-votants tous les 2 jours à 19h"""
+    now = datetime.now(TZ_FR)
+    
+    async with db.acquire() as conn:
+        polls = await conn.fetch("SELECT * FROM polls WHERE max_date IS NULL OR max_date > $1", now)
+    
+    for poll in polls:
+        poll_age = now - poll["created_at"].replace(tzinfo=TZ_FR)
+        days_since_creation = poll_age.days
+        
+        # Vérifier tous les 2 jours (0, 2, 4, 6...)
+        if days_since_creation > 0 and days_since_creation % 2 == 0:
+            reminder_day = days_since_creation // 2
+            
+            async with db.acquire() as conn:
+                already_sent = await conn.fetchrow(
+                    "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type=$2",
+                    poll["id"], f"non_voters_day_{days_since_creation}"
+                )
+            
+            if not already_sent:
+                await send_non_voters_reminder(
+                    poll,
+                    "🔔 **Rappel : N'oublie pas de voter !**\n\nTu n'as pas encore voté pour ce sondage."
+                )
+                
+                async with db.acquire() as conn:
+                    await conn.execute(
+                        "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, $2)",
+                        poll["id"], f"non_voters_day_{days_since_creation}"
+                    )
+                
+                logging.info(f"✅ Rappel non-votants envoyé pour le sondage {poll['id']} (jour {days_since_creation})")
+
 
 # -------------------- Events --------------------
 @bot.event
@@ -729,6 +829,7 @@ async def on_ready():
 
     # Lancer le scheduler de rappels
     bot.loop.create_task(reminder_scheduler())
+    bot.loop.create_task(daily_19h_scheduler())
 
     logging.info(f"✅ Bot connecté : {bot.user}")
 
