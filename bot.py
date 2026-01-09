@@ -175,7 +175,7 @@ class PresencePollView(View):
 # -------------------- Modal --------------------
 class DateModal(Modal, title="📅 Dates de l'événement"):
     event_date = TextInput(
-        label="Date événement (JJ/MM/AAAA ou JJ/MM/AAAA-HH:mm)",
+        label="Date événement",
         placeholder="Ex: 25/12/2024 ou 25/12/2024-20:00",
         required=True,
         max_length=16
@@ -246,6 +246,7 @@ async def create_poll(interaction: discord.Interaction, question: str, options: 
 
     embed.description = "_Chargement..._"
 
+    # 🆕 ENVOYER UNIQUEMENT L'EMBED (pas de content)
     await interaction.response.send_message(embed=embed, view=view)
     message = await interaction.original_response()
 
@@ -306,7 +307,7 @@ async def update_poll_display(message: discord.Message, poll_id: int):
             else:
                 embed.add_field(name=f"{emoji} {option} (0)", value="_Aucun_", inline=False)
 
-    # 🆕 SÉPARATION Non-votants / En attente
+    # 🆕 SÉPARATION Non-votants / En attente de confirmation
     guild = message.guild
     channel = message.channel
 
@@ -314,11 +315,12 @@ async def update_poll_display(message: discord.Message, poll_id: int):
     voted_user_ids = set(v["user_id"] for v in votes)
 
     if poll["is_presence_poll"]:
-        # Pour sondage de présence : séparer vraiment
+        # Ceux qui ont voté "En attente"
         waiting_user_ids = set(v["user_id"] for v in votes if v["emoji"] == "⏳")
+        
+        # Ceux qui n'ont PAS voté du tout
         non_voted = [m for m in all_members if m.id not in voted_user_ids]
-        waiting_members = [m for m in all_members if m.id in waiting_user_ids]
-
+        
         # Afficher les non-votants
         if non_voted:
             mentions = ", ".join([m.mention for m in non_voted[:20]])
@@ -326,8 +328,9 @@ async def update_poll_display(message: discord.Message, poll_id: int):
                 mentions += f" _et {len(non_voted) - 20} autres..._"
             embed.add_field(name=f"❓ Non-votants ({len(non_voted)})", value=mentions, inline=False)
 
-        # Afficher séparément ceux en attente
-        if waiting_members:
+        # Afficher séparément ceux en attente de confirmation
+        if waiting_user_ids:
+            waiting_members = [guild.get_member(uid) for uid in waiting_user_ids if guild.get_member(uid)]
             mentions = ", ".join([m.mention for m in waiting_members[:20]])
             if len(waiting_members) > 20:
                 mentions += f" _et {len(waiting_members) - 20} autres..._"
@@ -354,6 +357,7 @@ async def update_poll_display(message: discord.Message, poll_id: int):
     if poll["max_date"] and now > poll["max_date"]:
         embed.set_footer(text="🔒 Le vote est terminé")
 
+    # 🆕 ÉDITER UNIQUEMENT L'EMBED (pas de content)
     await message.edit(embed=embed)
 
 # -------------------- Restore Views --------------------
@@ -730,3 +734,4 @@ async def on_ready():
 
 # -------------------- Run Bot --------------------
 bot.run(os.getenv("TOKEN_DISCORD"))
+
