@@ -119,7 +119,7 @@ class PollView(View):
                         ON CONFLICT (poll_id, user_id) 
                         DO UPDATE SET emoji=$3
                     """, self.poll_id, interaction.user.id, emoji)
-                    # await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
+                    #await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
 
             await update_poll_display(interaction.message, self.poll_id)
 
