@@ -236,18 +236,14 @@ class DateModal(Modal, title="📅 Dates de l'événement"):
 async def create_poll(interaction: discord.Interaction, question: str, options: list, is_presence: bool, event_date: datetime, max_date: datetime = None):
     """Crée un sondage en base et envoie le message"""
 
-    # Créer le message embed initial
+    # Créer la vue initiale
     if is_presence:
-        embed = discord.Embed(title=f"📊 {question}", color=discord.Color.green())
         view = PresencePollView(0)  # ID temporaire
     else:
-        embed = discord.Embed(title=f"📊 {question}", color=discord.Color.blue())
         view = PollView(0, options)  # ID temporaire
 
-    embed.description = "_Chargement..._"
-
-    # 🆕 ENVOYER UNIQUEMENT L'EMBED (pas de content)
-    await interaction.response.send_message(embed=embed, view=view)
+    # Envoyer le message avec contenu textuel
+    await interaction.response.send_message(content="📊 _Chargement..._", view=view)
     message = await interaction.original_response()
 
     # Enregistrer en base
@@ -281,20 +277,25 @@ async def update_poll_display(message: discord.Message, poll_id: int):
     for vote in votes:
         vote_counts[vote["emoji"]].append(vote["user_id"])
 
-    # Construire l'embed
+    # Construire le contenu textuel
+    content_parts = []
+    
+    # Titre
     if poll["is_presence_poll"]:
-        embed = discord.Embed(title=f"📊 {poll['question']}", color=discord.Color.green())
+        content_parts.append(f"# 📊 {poll['question']}\n")
+    else:
+        content_parts.append(f"# 📊 {poll['question']}\n")
 
+    # Afficher les votes
+    if poll["is_presence_poll"]:
         for emoji, label in [("✅", "Présent"), ("⏳", "En attente"), ("❌", "Absent")]:
             users = vote_counts.get(emoji, [])
             if users:
                 mentions = ", ".join([f"<@{uid}>" for uid in users])
-                embed.add_field(name=f"{emoji} {label} ({len(users)})", value=mentions, inline=False)
+                content_parts.append(f"**{emoji} {label} ({len(users)})**\n{mentions}\n")
             else:
-                embed.add_field(name=f"{emoji} {label} (0)", value="_Aucun_", inline=False)
+                content_parts.append(f"**{emoji} {label} (0)**\n_Aucun_\n")
     else:
-        embed = discord.Embed(title=f"📊 {poll['question']}", color=discord.Color.blue())
-
         emojis = ["🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭", "🇮", "🇯",
                   "🇰", "🇱", "🇲", "🇳", "🇴", "🇵", "🇶", "🇷", "🇸", "🇹"]
 
@@ -303,11 +304,13 @@ async def update_poll_display(message: discord.Message, poll_id: int):
             users = vote_counts.get(emoji, [])
             if users:
                 mentions = ", ".join([f"<@{uid}>" for uid in users])
-                embed.add_field(name=f"{emoji} {option} ({len(users)})", value=mentions, inline=False)
+                content_parts.append(f"**{emoji} {option} ({len(users)})**\n{mentions}\n")
             else:
-                embed.add_field(name=f"{emoji} {option} (0)", value="_Aucun_", inline=False)
+                content_parts.append(f"**{emoji} {option} (0)**\n_Aucun_\n")
 
-    # 🆕 SÉPARATION Non-votants / En attente de confirmation
+    content_parts.append("")  # Ligne vide pour séparation
+
+    # Séparation Non-votants / En attente de confirmation
     guild = message.guild
     channel = message.channel
 
@@ -317,16 +320,16 @@ async def update_poll_display(message: discord.Message, poll_id: int):
     if poll["is_presence_poll"]:
         # Ceux qui ont voté "En attente"
         waiting_user_ids = set(v["user_id"] for v in votes if v["emoji"] == "⏳")
-        
+
         # Ceux qui n'ont PAS voté du tout
         non_voted = [m for m in all_members if m.id not in voted_user_ids]
-        
+
         # Afficher les non-votants
         if non_voted:
             mentions = ", ".join([m.mention for m in non_voted[:20]])
             if len(non_voted) > 20:
                 mentions += f" _et {len(non_voted) - 20} autres..._"
-            embed.add_field(name=f"❓ Non-votants ({len(non_voted)})", value=mentions, inline=False)
+            content_parts.append(f"**❓ Non-votants ({len(non_voted)})**\n{mentions}\n")
 
         # Afficher séparément ceux en attente de confirmation
         if waiting_user_ids:
@@ -334,7 +337,7 @@ async def update_poll_display(message: discord.Message, poll_id: int):
             mentions = ", ".join([m.mention for m in waiting_members[:20]])
             if len(waiting_members) > 20:
                 mentions += f" _et {len(waiting_members) - 20} autres..._"
-            embed.add_field(name=f"⏳ En attente de confirmation ({len(waiting_members)})", value=mentions, inline=False)
+            content_parts.append(f"**⏳ En attente de confirmation ({len(waiting_members)})**\n{mentions}\n")
     else:
         # Pour sondage classique : juste les non-votants
         non_voted = [m for m in all_members if m.id not in voted_user_ids]
@@ -342,24 +345,31 @@ async def update_poll_display(message: discord.Message, poll_id: int):
             mentions = ", ".join([m.mention for m in non_voted[:20]])
             if len(non_voted) > 20:
                 mentions += f" _et {len(non_voted) - 20} autres..._"
-            embed.add_field(name=f"❓ Non-votants ({len(non_voted)})", value=mentions, inline=False)
+            content_parts.append(f"**❓ Non-votants ({len(non_voted)})**\n{mentions}\n")
 
     # Afficher les dates
+    content_parts.append("")  # Ligne vide
     event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
-    embed.add_field(name="📅 Événement", value=event_str, inline=True)
+    content_parts.append(f"**📅 Événement :** {event_str}")
 
     if poll["max_date"]:
         max_str = poll["max_date"].strftime("%d/%m/%Y à %H:%M")
-        embed.add_field(name="⏰ Date limite de vote", value=max_str, inline=True)
+        content_parts.append(f"**⏰ Date limite de vote :** {max_str}")
 
     # Vérifier si le sondage est fermé
     now = datetime.now(TZ_FR)
     if poll["max_date"] and now > poll["max_date"]:
-        embed.set_footer(text="🔒 Le vote est terminé")
+        content_parts.append("\n🔒 **Le vote est terminé**")
 
-    # 🆕 ÉDITER UNIQUEMENT L'EMBED (pas de content)
-    await message.edit(embed=embed)
+    # Assembler le contenu final
+    content = "\n".join(content_parts)
+    
+    # Vérifier la limite de 2000 caractères de Discord
+    if len(content) > 2000:
+        content = content[:1997] + "..."
 
+    # Éditer uniquement le contenu (pas d'embed)
+    await message.edit(content=content)
 # -------------------- Restore Views --------------------
 async def restore_poll_views():
     """Restaure les boutons interactifs après un redémarrage"""
