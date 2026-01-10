@@ -111,7 +111,7 @@ class PollView(View):
                         "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
                         self.poll_id, interaction.user.id
                     )
-                    # await interaction.response.send_message("✅ Vote annulé", ephemeral=True)
+                    await interaction.response.send_message("✅ Vote annulé", ephemeral=True)
                 else:
                     await conn.execute("""
                         INSERT INTO votes (poll_id, user_id, emoji) 
@@ -119,7 +119,7 @@ class PollView(View):
                         ON CONFLICT (poll_id, user_id) 
                         DO UPDATE SET emoji=$3
                     """, self.poll_id, interaction.user.id, emoji)
-                    # await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
+                    await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
 
             await update_poll_display(interaction.message, self.poll_id)
 
@@ -158,7 +158,7 @@ class PresencePollView(View):
                         "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
                         self.poll_id, interaction.user.id
                     )
-                    # await interaction.response.send_message("✅ Vote annulé", ephemeral=True)
+                    await interaction.response.send_message("✅ Vote annulé", ephemeral=True)
                 else:
                     await conn.execute("""
                         INSERT INTO votes (poll_id, user_id, emoji) 
@@ -166,7 +166,7 @@ class PresencePollView(View):
                         ON CONFLICT (poll_id, user_id) 
                         DO UPDATE SET emoji=$3
                     """, self.poll_id, interaction.user.id, emoji)
-                    #await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
+                    await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
 
             await update_poll_display(interaction.message, self.poll_id)
 
