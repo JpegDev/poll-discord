@@ -624,53 +624,6 @@ async def send_waiting_reminder(poll, message_text):
             pass
 
 
-async def send_non_voters_reminder(poll, message_text):
-    """Envoie un rappel aux non-votants ET aux personnes en attente"""
-    channel = bot.get_channel(poll["channel_id"])
-    if not channel:
-        return
-
-    try:
-        message = await channel.fetch_message(poll["message_id"])
-    except:
-        return
-
-    guild = channel.guild
-
-    async with db.acquire() as conn:
-        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
-
-    voted_user_ids = set()
-    waiting_user_ids = set()
-
-    for v in votes:
-        voted_user_ids.add(v["user_id"])
-        if poll["is_presence_poll"] and v["emoji"] == "⏳":
-            waiting_user_ids.add(v["user_id"])
-
-    to_notify = []
-    for member in guild.members:
-        if member.bot:
-            continue
-        if not channel.permissions_for(member).read_messages:
-            continue
-
-        if poll["is_presence_poll"]:
-            # Notifier les non-votants ET ceux en attente
-            if member.id not in voted_user_ids or member.id in waiting_user_ids:
-                to_notify.append(member)
-        else:
-            if member.id not in voted_user_ids:
-                to_notify.append(member)
-
-    event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
-
-    for member in to_notify:
-        try:
-            msg = f"{message_text}\n\n**{poll['question']}**\n📅 Événement : {event_date_str}\n👉 {message.jump_url}"
-            await member.send(msg)
-        except:
-            pass
 
 
 async def close_poll(poll):
@@ -791,39 +744,205 @@ async def daily_19h_scheduler():
 
 
 async def send_non_voters_biweekly_reminders():
-    """Envoie un rappel aux non-votants tous les 2 jours à 19h"""
+    """Envoie un rappel groupé aux non-votants tous les 2 jours à 19h"""
     now = datetime.now(TZ_FR)
-    
+
     async with db.acquire() as conn:
         polls = await conn.fetch("SELECT * FROM polls WHERE max_date IS NULL OR max_date > $1", now)
-    
+
+    # Dictionnaire : user_id -> liste de (poll, reminder_type)
+    user_reminders = {}
+    polls_to_mark = []  # Liste de (poll_id, reminder_type) à marquer comme envoyés
+
     for poll in polls:
         poll_age = now - poll["created_at"].replace(tzinfo=TZ_FR)
         days_since_creation = poll_age.days
-        
+
         # Vérifier tous les 2 jours (0, 2, 4, 6...)
         if days_since_creation > 0 and days_since_creation % 2 == 0:
-            reminder_day = days_since_creation // 2
-            
+            reminder_type = f"non_voters_day_{days_since_creation}"
+
             async with db.acquire() as conn:
                 already_sent = await conn.fetchrow(
                     "SELECT * FROM reminders_sent WHERE poll_id=$1 AND reminder_type=$2",
-                    poll["id"], f"non_voters_day_{days_since_creation}"
+                    poll["id"], reminder_type
                 )
-            
+
             if not already_sent:
-                await send_non_voters_reminder(
-                    poll,
-                    "🔔 **Rappel : N'oublie pas de voter !**\n\nTu n'as pas encore voté pour ce sondage."
+                # Récupérer les utilisateurs à notifier pour ce poll
+                users_for_poll = await get_users_to_notify(poll)
+
+                # Ajouter ce poll à la liste de chaque utilisateur
+                for user_id, is_waiting in users_for_poll:
+                    if user_id not in user_reminders:
+                        user_reminders[user_id] = []
+
+                    user_reminders[user_id].append({
+                        "poll": poll,
+                        "is_waiting": is_waiting
+                    })
+
+                # Marquer pour enregistrement après envoi
+                polls_to_mark.append((poll["id"], reminder_type))
+
+    # Envoi des rappels groupés par utilisateur
+    if user_reminders:
+        await send_grouped_reminders(user_reminders)
+
+        # Marquer tous les rappels comme envoyés
+        async with db.acquire() as conn:
+            for poll_id, reminder_type in polls_to_mark:
+                await conn.execute(
+                    "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, $2)",
+                    poll_id, reminder_type
                 )
+                logging.info(f"✅ Rappel non-votants envoyé pour le sondage {poll_id} ({reminder_type})")
+
+async def get_users_to_notify(poll):
+    """Retourne la liste des (user_id, is_waiting) à notifier pour un sondage"""
+    channel = bot.get_channel(poll["channel_id"])
+    if not channel:
+        return []
+
+    try:
+        message = await channel.fetch_message(poll["message_id"])
+    except:
+        return []
+
+    guild = channel.guild
+
+    async with db.acquire() as conn:
+        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
+
+    voted_user_ids = set()
+    waiting_user_ids = set()
+
+    for v in votes:
+        voted_user_ids.add(v["user_id"])
+        if poll["is_presence_poll"] and v["emoji"] == "⏳":
+            waiting_user_ids.add(v["user_id"])
+
+    users_to_notify = []
+
+    for member in guild.members:
+        if member.bot:
+            continue
+        if not channel.permissions_for(member).read_messages:
+            continue
+
+        should_notify = False
+        is_waiting = False
+
+        if poll["is_presence_poll"]:
+            # Notifier les non-votants ET ceux en attente
+            if member.id not in voted_user_ids:
+                should_notify = True
+                is_waiting = False
+            elif member.id in waiting_user_ids:
+                should_notify = True
+                is_waiting = True
+        else:
+            if member.id not in voted_user_ids:
+                should_notify = True
+                is_waiting = False
+
+        if should_notify:
+            users_to_notify.append((member.id, is_waiting))
+
+    return users_to_notify
+
+async def send_grouped_reminders(user_reminders):
+    """Envoie un message groupé à chaque utilisateur avec tous ses sondages"""
+    for user_id, poll_list in user_reminders.items():
+        try:
+            user = await bot.fetch_user(user_id)
+
+            # Construction du message groupé
+            msg = "🔔 **Rappel : N'oublie pas de voter !**\n\n"
+            msg += f"📊 **Tu as {len(poll_list)} sondage(s) en attente :**\n\n"
+
+            for i, poll_info in enumerate(poll_list, 1):
+                poll = poll_info["poll"]
+                is_waiting = poll_info["is_waiting"]
+
+                status = "⏳ En attente de confirmation" if is_waiting else "❌ Non voté"
+                event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+
+                # Récupérer le channel et le jump_url
+                channel = bot.get_channel(poll["channel_id"])
+                channel_name = f"#{channel.name}" if channel else "Channel inconnu"
                 
-                async with db.acquire() as conn:
-                    await conn.execute(
-                        "INSERT INTO reminders_sent (poll_id, reminder_type) VALUES ($1, $2)",
-                        poll["id"], f"non_voters_day_{days_since_creation}"
-                    )
-                
-                logging.info(f"✅ Rappel non-votants envoyé pour le sondage {poll['id']} (jour {days_since_creation})")
+                if channel:
+                    try:
+                        message = await channel.fetch_message(poll["message_id"])
+                        jump_url = message.jump_url
+                    except:
+                        jump_url = "Lien indisponible"
+                else:
+                    jump_url = "Lien indisponible"
+
+                msg += f"**{i}. {channel_name} - {poll['question']}**\n"
+                msg += f"   {status}\n"
+                msg += f"   📅 {event_date_str}\n"
+                msg += f"   👉 {jump_url}\n\n"
+
+            await user.send(msg)
+            logging.info(f"✅ Rappel groupé envoyé à {user_id} pour {len(poll_list)} sondage(s)")
+
+        except Exception as e:
+            logging.error(f"❌ Impossible d'envoyer le rappel à {user_id}: {e}")
+
+async def send_non_voters_reminder(poll, message_text):
+    """
+    Fonction conservée pour compatibilité avec d'autres rappels (48h, J-1, etc.)
+    Envoie un rappel individuel pour un seul sondage
+    """
+    channel = bot.get_channel(poll["channel_id"])
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(poll["message_id"])
+    except:
+        return
+
+    guild = channel.guild
+
+    async with db.acquire() as conn:
+        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
+
+    voted_user_ids = set()
+    waiting_user_ids = set()
+
+    for v in votes:
+        voted_user_ids.add(v["user_id"])
+        if poll["is_presence_poll"] and v["emoji"] == "⏳":
+            waiting_user_ids.add(v["user_id"])
+
+    to_notify = []
+    for member in guild.members:
+        if member.bot:
+            continue
+        if not channel.permissions_for(member).read_messages:
+            continue
+
+        if poll["is_presence_poll"]:
+            # Notifier les non-votants ET ceux en attente
+            if member.id not in voted_user_ids or member.id in waiting_user_ids:
+                to_notify.append(member)
+        else:
+            if member.id not in voted_user_ids:
+                to_notify.append(member)
+
+    event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+    channel_name = f"#{channel.name}"
+
+    for member in to_notify:
+        try:
+            msg = f"{message_text}\n\n**{channel_name} - {poll['question']}**\n📅 Événement : {event_date_str}\n👉 {message.jump_url}"
+            await member.send(msg)
+        except:
+            pass
 
 
 # -------------------- Events --------------------
