@@ -40,7 +40,8 @@ async def send_reminders():
                     continue
 
                 guild = channel.guild
-                votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
+                async with database.db.acquire() as conn:
+                    votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
                 voted_user_ids = {v["user_id"] for v in votes}
                 waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
 
@@ -234,11 +235,11 @@ async def close_poll(poll):
 
             if poll["is_presence_poll"]:
                 if member.id not in voted_user_ids or member.id in waiting_user_ids:
-                    status = "⏳ En attente non confirmée" if member.id in waiting_user_ids else "❌ Pas voted"
+                    status = "⏳ En attente non confirmée" if member.id in waiting_user_ids else "❌ Pas voté"
                     user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | {status} | 👉 {message.jump_url}")
             else:
                 if member.id not in voted_user_ids:
-                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | ❌ Pas voted | 👉 {message.jump_url}")
+                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | ❌ Pas voté | 👉 {message.jump_url}")
 
         if user_reminders:
             await message.edit(view=None)

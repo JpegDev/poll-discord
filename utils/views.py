@@ -285,9 +285,3 @@ class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
                 if opt.lower() in vote_text.lower():
                     return Config.EMOJIS[i]
         return None
-
-
-def update_poll_display(message, poll_id):
-    """Wrapper pour importer dynamiquement la fonction"""
-    from utils.poll_utils import _update_poll_display as update
-    return update(message, poll_id)
