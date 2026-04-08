@@ -644,58 +644,99 @@ async def check_polls(interaction: discord.Interaction):
 
 # -------------------- Reminders --------------------
 async def send_reminders():
-    """Envoie les rappels appropriés selon le type de sondage et la situation"""
+    """Collecte les rappels par utilisateur et envoie un DM groupé à chacun"""
     try:
         now = datetime.now(Config.TZ)
 
         async with db.acquire() as conn:
             polls = await conn.fetch("SELECT * FROM polls")
 
+        user_reminders = defaultdict(list)
+
         for poll in polls:
             try:
-                await check_and_send_reminders(poll, now)
+                if poll["max_date"] and now >= poll["max_date"]:
+                    await close_poll(poll)
+                    continue
+
+                channel = bot.get_channel(poll["channel_id"])
+                if not channel:
+                    continue
+
+                try:
+                    message = await channel.fetch_message(poll["message_id"])
+                except discord.NotFound:
+                    logger.warning(f"Message {poll['message_id']} introuvable pour le sondage {poll['id']}")
+                    continue
+                except Exception:
+                    continue
+
+                guild = channel.guild
+                votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
+                voted_user_ids = {v["user_id"] for v in votes}
+                waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
+
+                event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+                deadline_str = f" | ⏰ Limite : {poll['max_date'].strftime('%d/%m/%Y à %H:%M')}" if poll["max_date"] else ""
+                poll_summary = f"#{channel.name} — {poll['question']} | 📅 {event_str}{deadline_str} | 👉 {message.jump_url}"
+
+                if poll["max_date"]:
+                    time_until_deadline = poll["max_date"] - now
+                    if timedelta(hours=Config.REMINDER_J_MINUS_2_MIN) <= time_until_deadline <= timedelta(hours=Config.REMINDER_J_MINUS_2_MAX):
+                        if not await _reminder_already_sent(poll["id"], 'j_minus_2_waiting'):
+                            for uid in waiting_user_ids:
+                                user_reminders[uid].append(f"⏰ **Plus que 2 jours !** — {poll_summary}")
+                            await _mark_reminder_sent(poll["id"], 'j_minus_2_waiting')
+                            logger.info(f"📨 Rappel J-2 marqué pour le sondage {poll['id']}")
+                    elif timedelta(hours=Config.REMINDER_J_MINUS_1_MIN) <= time_until_deadline <= timedelta(hours=Config.REMINDER_J_MINUS_1_MAX):
+                        if not await _reminder_already_sent(poll["id"], 'j_minus_1_waiting'):
+                            for uid in waiting_user_ids:
+                                user_reminders[uid].append(f"🔔 **Dernier jour !** — {poll_summary}")
+                            await _mark_reminder_sent(poll["id"], 'j_minus_1_waiting')
+                            logger.info(f"📨 Rappel J-1 marqué pour le sondage {poll['id']}")
+                else:
+                    if poll["is_presence_poll"]:
+                        poll_age = now - poll["created_at"].replace(tzinfo=Config.TZ)
+                        weeks_since_creation = int(poll_age.days / 7)
+                        for week in range(1, weeks_since_creation + 1):
+                            if not await _reminder_already_sent(poll["id"], f"weekly_waiting_{week}"):
+                                target_week_date = poll["created_at"].replace(tzinfo=Config.TZ) + timedelta(weeks=week)
+                                if target_week_date.date() == now.date() and 18 <= now.hour <= 20:
+                                    for uid in waiting_user_ids:
+                                        user_reminders[uid].append(f"📅 **Rappel hebdomadaire** — {poll_summary}")
+                                    await _mark_reminder_sent(poll["id"], f"weekly_waiting_{week}")
+                                    logger.info(f"📨 Rappel hebdo semaine {week} marqué pour le sondage {poll['id']}")
+
             except Exception as e:
                 logger.error(f"❌ Erreur lors du traitement des rappels pour le sondage {poll['id']}: {e}")
-                
+
+        await _send_grouped_reminders(user_reminders, "⏰ **Rappels — Sondages en attente de confirmation**")
+
     except Exception as e:
         logger.error(f"❌ Erreur lors de l'envoi des rappels: {e}")
 
-async def check_and_send_reminders(poll, now):
-    """Vérifie et envoie les rappels pour un sondage donné"""
-    if poll["max_date"] and now >= poll["max_date"]:
-        await close_poll(poll)
-        return
-
-    if poll["max_date"]:
-        time_until_deadline = poll["max_date"] - now
-
-        # Rappel J-2
-        if timedelta(hours=Config.REMINDER_J_MINUS_2_MIN) <= time_until_deadline <= timedelta(hours=Config.REMINDER_J_MINUS_2_MAX):
-            if not await _reminder_already_sent(poll["id"], 'j_minus_2_waiting'):
-                await send_waiting_reminder(poll, "⏰ **Rappel : Plus que 2 jours !**\n\nTu es toujours en attente pour ce sondage.")
-                await _mark_reminder_sent(poll["id"], 'j_minus_2_waiting')
-                logger.info(f"📨 Rappel J-2 envoyé pour le sondage {poll['id']}")
-
-        # Rappel J-1
-        elif timedelta(hours=Config.REMINDER_J_MINUS_1_MIN) <= time_until_deadline <= timedelta(hours=Config.REMINDER_J_MINUS_1_MAX):
-            if not await _reminder_already_sent(poll["id"], 'j_minus_1_waiting'):
-                await send_waiting_reminder(poll, "🔔 **Rappel : Dernier jour !**\n\nTu es toujours en attente. Confirme ta présence avant la date limite !")
-                await _mark_reminder_sent(poll["id"], 'j_minus_1_waiting')
-                logger.info(f"📨 Rappel J-1 envoyé pour le sondage {poll['id']}")
-    else:
-        # Rappels hebdomadaires pour sondages sans max_date
-        if poll["is_presence_poll"]:
-            poll_age = now - poll["created_at"].replace(tzinfo=Config.TZ)
-            weeks_since_creation = int(poll_age.days / 7)
-            
-            for week in range(1, weeks_since_creation + 1):
-                if not await _reminder_already_sent(poll["id"], f"weekly_waiting_{week}"):
-                    target_week_date = poll["created_at"].replace(tzinfo=Config.TZ) + timedelta(weeks=week)
-                    
-                    if target_week_date.date() == now.date() and 18 <= now.hour <= 20:
-                        await send_waiting_reminder(poll, f"📅 **Rappel hebdomadaire**\n\nTu es toujours en attente. Peux-tu confirmer ta présence ?")
-                        await _mark_reminder_sent(poll["id"], f"weekly_waiting_{week}")
-                        logger.info(f"📨 Rappel hebdomadaire semaine {week} envoyé pour le sondage {poll['id']}")
+async def _send_grouped_reminders(user_reminders, title):
+    """Envoie un DM groupé à chaque utilisateur avec tous ses rappels"""
+    for user_id, reminders in user_reminders.items():
+        if not reminders:
+            continue
+        member = None
+        for guild in bot.guilds:
+            member = guild.get_member(user_id)
+            if member:
+                break
+        if not member or member.bot:
+            continue
+        try:
+            lines = "\n\n".join(f"{i+1}. {r}" for i, r in enumerate(reminders))
+            msg = f"{title}\n\n{lines}"
+            await member.send(msg)
+            logger.info(f"📨 DM groupé envoyé à {user_id} ({len(reminders)} rappels)")
+        except discord.Forbidden:
+            logger.warning(f"Impossible d'envoyer un DM à {user_id} (DM fermés)")
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de l'envoi du DM groupé à {user_id}: {e}")
+        await asyncio.sleep(1)
 
 async def _reminder_already_sent(poll_id: int, reminder_type: str) -> bool:
     """Vérifie si un rappel a déjà été envoyé"""
@@ -721,118 +762,65 @@ async def _mark_reminder_sent(poll_id: int, reminder_type: str):
     except Exception as e:
         logger.error(f"❌ Erreur lors du marquage du rappel: {e}")
 
-async def send_waiting_reminder(poll, message_text):
-    """Envoie un rappel uniquement aux personnes en attente (⏳)"""
-    channel = bot.get_channel(poll["channel_id"])
-    if not channel:
-        return
-
+async def send_non_voters_biweekly_reminders():
+    """Collecte les rappels non-votants tous les 2 jours à 19h et envoie un DM groupé"""
     try:
-        message = await channel.fetch_message(poll["message_id"])
-    except discord.NotFound:
-        logger.warning(f"Message {poll['message_id']} introuvable pour le rappel")
-        return
-    except Exception as e:
-        logger.error(f"❌ Erreur lors de la récupération du message: {e}")
-        return
-
-    guild = channel.guild
-
-    try:
-        async with db.acquire() as conn:
-            votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
-
-        waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
-
-        if not waiting_user_ids:
-            logger.info(f"Aucune personne en attente pour le sondage {poll['id']}")
-            return
-
-        event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
-        sent_count = 0
-
-        for user_id in waiting_user_ids:
-            try:
-                member = guild.get_member(user_id)
-                if not member or member.bot:
-                    continue
-
-                msg = f"{message_text}\n\n**{poll['question']}**\n📅 Événement : {event_date_str}\n👉 {message.jump_url}"
-                await member.send(msg)
-                sent_count += 1
-            except discord.Forbidden:
-                logger.warning(f"Impossible d'envoyer un DM à {user_id} (DM fermés)")
-            except Exception as e:
-                logger.error(f"❌ Erreur lors de l'envoi du DM à {user_id}: {e}")
-
-        logger.info(f"📨 Rappel envoyé à {sent_count} personnes en attente pour le sondage {poll['id']}")
+        now = datetime.now(Config.TZ)
         
-    except Exception as e:
-        logger.error(f"❌ Erreur lors de l'envoi des rappels en attente: {e}")
-
-async def send_non_voters_reminder(poll, message_text):
-    """Envoie un rappel aux non-votants ET aux personnes en attente"""
-    channel = bot.get_channel(poll["channel_id"])
-    if not channel:
-        return
-
-    try:
-        message = await channel.fetch_message(poll["message_id"])
-    except discord.NotFound:
-        logger.warning(f"Message {poll['message_id']} introuvable pour le rappel")
-        return
-    except Exception as e:
-        logger.error(f"❌ Erreur lors de la récupération du message: {e}")
-        return
-
-    guild = channel.guild
-
-    try:
         async with db.acquire() as conn:
-            votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
-
-        voted_user_ids = set()
-        waiting_user_ids = set()
-
-        for v in votes:
-            voted_user_ids.add(v["user_id"])
-            if poll["is_presence_poll"] and v["emoji"] == "⏳":
-                waiting_user_ids.add(v["user_id"])
-
-        to_notify = []
-        for member in guild.members:
-            if member.bot:
-                continue
-            if not channel.permissions_for(member).read_messages:
-                continue
-
-            if poll["is_presence_poll"]:
-                if member.id not in voted_user_ids or member.id in waiting_user_ids:
-                    to_notify.append(member)
-            else:
-                if member.id not in voted_user_ids:
-                    to_notify.append(member)
-
-        event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
-        sent_count = 0
-
-        for member in to_notify:
-            try:
-                msg = f"{message_text}\n\n**{poll['question']}**\n📅 Événement : {event_date_str}\n👉 {message.jump_url}"
-                await member.send(msg)
-                sent_count += 1
-            except discord.Forbidden:
-                logger.warning(f"Impossible d'envoyer un DM à {member.id} (DM fermés)")
-            except Exception as e:
-                logger.error(f"❌ Erreur lors de l'envoi du DM à {member.id}: {e}")
-
-        logger.info(f"📨 Rappel envoyé à {sent_count} non-votants pour le sondage {poll['id']}")
+            polls = await conn.fetch("SELECT * FROM polls WHERE max_date IS NULL OR max_date > $1", now)
         
+        user_reminders = defaultdict(list)
+
+        for poll in polls:
+            try:
+                poll_age = now - poll["created_at"].replace(tzinfo=Config.TZ)
+                days_since_creation = poll_age.days
+                
+                if days_since_creation > 0 and days_since_creation % 2 == 0:
+                    if not await _reminder_already_sent(poll["id"], f"non_voters_day_{days_since_creation}"):
+                        channel = bot.get_channel(poll["channel_id"])
+                        if not channel:
+                            continue
+                        try:
+                            message = await channel.fetch_message(poll["message_id"])
+                        except (discord.NotFound, Exception):
+                            continue
+
+                        guild = channel.guild
+                        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
+                        voted_user_ids = {v["user_id"] for v in votes}
+                        waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
+
+                        event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+                        deadline_str = f" | ⏰ Limite : {poll['max_date'].strftime('%d/%m/%Y à %H:%M')}" if poll["max_date"] else ""
+                        poll_summary = f"#{channel.name} — {poll['question']} | 📅 {event_str}{deadline_str} | 👉 {message.jump_url}"
+
+                        for member in guild.members:
+                            if member.bot:
+                                continue
+                            if not channel.permissions_for(member).read_messages:
+                                continue
+                            if poll["is_presence_poll"]:
+                                if member.id not in voted_user_ids or member.id in waiting_user_ids:
+                                    user_reminders[member.id].append(f"🔔 **N'oublie pas de voter !** — {poll_summary}")
+                            else:
+                                if member.id not in voted_user_ids:
+                                    user_reminders[member.id].append(f"🔔 **N'oublie pas de voter !** — {poll_summary}")
+
+                        await _mark_reminder_sent(poll["id"], f"non_voters_day_{days_since_creation}")
+                        logger.info(f"✅ Rappel non-votants marqué pour le sondage {poll['id']} (jour {days_since_creation})")
+                        
+            except Exception as e:
+                logger.error(f"❌ Erreur lors du rappel tous les 2 jours pour le sondage {poll['id']}: {e}")
+
+        await _send_grouped_reminders(user_reminders, "🔔 **Rappels — Sondages en attente de vote**")
+                
     except Exception as e:
-        logger.error(f"❌ Erreur lors de l'envoi des rappels non-votants: {e}")
+        logger.error(f"❌ Erreur lors de l'envoi des rappels tous les 2 jours: {e}")
 
 async def close_poll(poll):
-    """Ferme un sondage et notifie les non-votants"""
+    """Ferme un sondage et notifie les non-votants avec un DM groupé"""
     if await _reminder_already_sent(poll["id"], 'closed'):
         return
 
@@ -863,7 +851,8 @@ async def close_poll(poll):
             if poll["is_presence_poll"] and v["emoji"] == "⏳":
                 waiting_user_ids.add(v["user_id"])
 
-        to_notify = []
+        user_reminders = defaultdict(list)
+
         for member in guild.members:
             if member.bot:
                 continue
@@ -872,37 +861,18 @@ async def close_poll(poll):
 
             if poll["is_presence_poll"]:
                 if member.id not in voted_user_ids or member.id in waiting_user_ids:
-                    to_notify.append(member)
+                    status = "⏳ En attente non confirmée" if member.id in waiting_user_ids else "❌ Pas voté"
+                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | {status} | 👉 {message.jump_url}")
             else:
                 if member.id not in voted_user_ids:
-                    to_notify.append(member)
+                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | ❌ Pas voté | 👉 {message.jump_url}")
 
-        if to_notify:
+        if user_reminders:
             await message.edit(view=None)
             await update_poll_display(message, poll["id"])
-
-            event_date_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
-            sent_count = 0
-
-            for member in to_notify:
-                try:
-                    msg = f"🔒 **Le vote est terminé !**\n\n**{poll['question']}**\n📅 Événement : {event_date_str}\n"
-
-                    if poll["is_presence_poll"] and member.id in waiting_user_ids:
-                        msg += "\n⏳ Tu étais en attente et n'as pas confirmé ta présence."
-                    else:
-                        msg += "\n❌ Tu n'as pas voté à temps."
-
-                    msg += f"\n\n👉 {message.jump_url}"
-
-                    await member.send(msg)
-                    sent_count += 1
-                except discord.Forbidden:
-                    logger.warning(f"Impossible d'envoyer un DM à {member.id} (DM fermés)")
-                except Exception as e:
-                    logger.error(f"❌ Erreur lors de l'envoi du DM à {member.id}: {e}")
-
-            logger.info(f"🔒 Sondage {poll['id']} fermé, {sent_count} notifications envoyées")
+            total_notified = sum(len(v) for v in user_reminders.values())
+            await _send_grouped_reminders(user_reminders, "🔒 **Résultats — Vote terminé**")
+            logger.info(f"🔒 Sondage {poll['id']} fermé, {total_notified} notifications envoyées")
 
         await _mark_reminder_sent(poll["id"], 'closed')
         
