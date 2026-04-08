@@ -117,9 +117,9 @@ async def restore_poll_views():
                     continue
 
                 if poll["is_presence_poll"]:
-                    view = PresencePollView(poll["id"])
+                    view = PresencePollView(poll["id"], show_edit=Config.EDITOR_ROLE_ID is not None)
                 else:
-                    view = PollView(poll["id"], poll["options"], poll["allow_multiple"])
+                    view = PollView(poll["id"], poll["options"], poll["allow_multiple"], show_edit=Config.EDITOR_ROLE_ID is not None)
                 
                 await message.edit(view=view)
                 restored += 1

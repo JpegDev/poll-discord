@@ -10,19 +10,20 @@ logger = logging.getLogger(__name__)
 class BasePollView(View):
     """Classe de base pour les vues de sondage"""
     
-    def __init__(self, poll_id: int, allow_multiple: bool = False):
+    def __init__(self, poll_id: int, allow_multiple: bool = False, show_edit: bool = True):
         super().__init__(timeout=None)
         self.poll_id = poll_id
         self.allow_multiple = allow_multiple
         
-        edit_button = Button(
-            label="Modifier un vote",
-            emoji="✏️",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"edit_vote_{poll_id}"
-        )
-        edit_button.callback = self.edit_vote_callback
-        self.add_item(edit_button)
+        if show_edit:
+            edit_button = Button(
+                label="Modifier un vote",
+                emoji="✏️",
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"edit_vote_{poll_id}"
+            )
+            edit_button.callback = self.edit_vote_callback
+            self.add_item(edit_button)
     
     async def edit_vote_callback(self, interaction: discord.Interaction):
         """Ouvre la vue pour sélectionner un membre"""
@@ -117,8 +118,8 @@ class BasePollView(View):
 class PollView(BasePollView):
     """Vue pour un sondage classique avec options personnalisées"""
     
-    def __init__(self, poll_id: int, options: list, allow_multiple: bool = False):
-        super().__init__(poll_id, allow_multiple)
+    def __init__(self, poll_id: int, options: list, allow_multiple: bool = False, show_edit: bool = True):
+        super().__init__(poll_id, allow_multiple, show_edit)
 
         for i, option in enumerate(options[:Config.MAX_OPTIONS]):
             button = Button(
@@ -139,8 +140,8 @@ class PollView(BasePollView):
 class PresencePollView(BasePollView):
     """Vue pour un sondage de présence"""
     
-    def __init__(self, poll_id: int):
-        super().__init__(poll_id, allow_multiple=False)
+    def __init__(self, poll_id: int, show_edit: bool = True):
+        super().__init__(poll_id, allow_multiple=False, show_edit=show_edit)
 
         buttons = [
             ("Présent", "✅", discord.ButtonStyle.success),

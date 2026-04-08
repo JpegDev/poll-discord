@@ -18,9 +18,9 @@ async def create_poll(interaction: discord.Interaction, question: str, options: 
         from utils.views import PollView, PresencePollView
         
         if is_presence:
-            view = PresencePollView(0)
+            view = PresencePollView(0, show_edit=False)
         else:
-            view = PollView(0, options, allow_multiple)
+            view = PollView(0, options, allow_multiple, show_edit=False)
 
         await interaction.response.send_message(content="📊 _Chargement..._", view=view)
         message = await interaction.original_response()
@@ -36,10 +36,11 @@ async def create_poll(interaction: discord.Interaction, question: str, options: 
 
         logger.info(f"✅ Sondage créé: id={poll_id}, question='{question[:50]}', multiple={allow_multiple}")
 
+        show_edit = Config.EDITOR_ROLE_ID is not None
         if is_presence:
-            view = PresencePollView(poll_id)
+            view = PresencePollView(poll_id, show_edit=show_edit)
         else:
-            view = PollView(poll_id, options, allow_multiple)
+            view = PollView(poll_id, options, allow_multiple, show_edit=show_edit)
 
         await update_poll_display(message, poll_id)
         await message.edit(view=view)
