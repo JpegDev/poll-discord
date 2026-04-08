@@ -4,7 +4,7 @@ import asyncpg
 import discord
 from discord import app_commands
 from discord.ext import commands
-from discord.ui import Button, View, Modal, TextInput
+from discord.ui import Button, View, Modal, TextInput, Select
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -15,6 +15,212 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# -------------------- Helper --------------------
+def is_editor(interaction: discord.Interaction) -> bool:
+    """Vérifie si l'utilisateur a le rôle éditeur de sondage"""
+    if Config.EDITOR_ROLE_ID is None:
+        return False
+    return any(role.id == Config.EDITOR_ROLE_ID for role in interaction.user.roles)
+
+
+# -------------------- Views for Edit Vote --------------------
+class EditVoteModal(Modal, title="✏️ Modifier un vote"):
+    """Modal pour modifier le vote d'un membre"""
+    
+    def __init__(self, poll_id: int, poll_data: dict, members_data: list):
+        super().__init__()
+        self.poll_id = poll_id
+        self.poll_data = poll_data
+        self.members_data = members_data
+        
+        current_options = []
+        if poll_data["is_presence_poll"]:
+            current_options = [("✅ Présent", "✅"), ("⏳ En attente", "⏳"), ("❌ Absent", "❌")]
+        else:
+            for i, opt in enumerate(poll_data["options"]):
+                current_options.append((opt, Config.EMOJIS[i]))
+        
+        for member_id, username, current_vote in members_data:
+            member_input = TextInput(
+                label=f"Vote de {username[:30]}",
+                placeholder=f"Actuel: {current_vote or 'Aucun'}",
+                required=True,
+                default_value=current_vote or "",
+                custom_id=f"vote_{member_id}"
+            )
+            self.add_item(member_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            async with db.acquire() as conn:
+                for child in self.children:
+                    if child.custom_id and child.custom_id.startswith("vote_"):
+                        member_id = int(child.custom_id.split("_")[1])
+                        new_vote = child.value.strip()
+                        
+                        await conn.execute(
+                            "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
+                            self.poll_id, member_id
+                        )
+                        
+                        if new_vote:
+                            emoji = self._get_emoji_from_vote(new_vote)
+                            if emoji:
+                                await conn.execute(
+                                    "INSERT INTO votes (poll_id, user_id, emoji) VALUES ($1, $2, $3)",
+                                    self.poll_id, member_id, emoji
+                                )
+            
+            await interaction.response.send_message("✅ Vote modifié avec succès", ephemeral=True)
+            
+            channel = bot.get_channel(self.poll_data["channel_id"])
+            if channel:
+                try:
+                    message = await channel.fetch_message(self.poll_data["message_id"])
+                    await update_poll_display(message, self.poll_id)
+                except discord.NotFound:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la modification du vote: {e}")
+            await interaction.response.send_message("❌ Erreur lors de la modification", ephemeral=True)
+    
+    def _get_emoji_from_vote(self, vote_text: str) -> str:
+        """Retourne l'emoji correspondant au vote"""
+        if self.poll_data["is_presence_poll"]:
+            for label, emoji in [("présent", "✅"), ("present", "✅"), ("✅", "✅"),
+                               ("en attente", "⏳"), ("⏳", "⏳"),
+                               ("absent", "❌"), ("❌", "❌")]:
+                if label in vote_text.lower():
+                    return emoji
+        else:
+            for i, opt in enumerate(self.poll_data["options"]):
+                if opt.lower() in vote_text.lower():
+                    return Config.EMOJIS[i]
+        return None
+
+
+class MemberSelectView(View):
+    """Vue avec Select pour choisir un membre à modifier"""
+    
+    def __init__(self, poll_id: int, poll_data: dict, members_data: list):
+        super().__init__(timeout=300)
+        self.poll_id = poll_id
+        self.poll_data = poll_data
+        self.members_data = members_data
+        
+        options = []
+        for member_id, username, current_vote in members_data:
+            vote_text = f" → {current_vote}" if current_vote else " → ⏸️ Pas de vote"
+            options.append(discord.SelectOption(label=username[:80], value=str(member_id), description=vote_text[:100]))
+        
+        select = Select(
+            placeholder="Sélectionner un membre",
+            options=options,
+            custom_id=f"member_select_{poll_id}"
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
+        
+        cancel_btn = Button(
+            label="Annuler",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"cancel_edit_{poll_id}"
+        )
+        cancel_btn.callback = self.cancel_callback
+        self.add_item(cancel_btn)
+    
+    async def select_callback(self, interaction: discord.Interaction):
+        member_id = int(interaction.data["values"][0])
+        member_data = [(mid, name, vote) for mid, name, vote in self.members_data if mid == member_id]
+        if member_data:
+            await interaction.response.send_modal(
+                EditVoteSingleModal(self.poll_id, self.poll_data, member_data[0])
+            )
+    
+    async def cancel_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("❌ Opération annulée", ephemeral=True)
+
+
+class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
+    """Modal pour modifier le vote d'un seul membre"""
+    
+    def __init__(self, poll_id: int, poll_data: dict, member_data: tuple):
+        super().__init__()
+        self.poll_id = poll_id
+        self.poll_data = poll_data
+        self.member_id, self.member_name, self.current_vote = member_data
+        
+        options = []
+        if poll_data["is_presence_poll"]:
+            options = [
+                ("✅ Présent", "✅"),
+                ("⏳ En attente", "⏳"),
+                ("❌ Absent", "❌"),
+                ("🗑️ Supprimer le vote", "DELETE")
+            ]
+        else:
+            for i, opt in enumerate(poll_data["options"]):
+                options.append((opt, Config.EMOJIS[i]))
+            options.append(("🗑️ Supprimer le vote", "DELETE"))
+        
+        options_str = "\n".join([f"• {label}" for label, _ in options])
+        
+        self.vote_input = TextInput(
+            label=f"Nouveau vote pour {self.member_name[:20]}",
+            placeholder=f"Actuel: {self.current_vote or 'Aucun'}\n\nOptions:\n{options_str}",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.vote_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            new_vote = self.vote_input.value.strip()
+            
+            async with db.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
+                    self.poll_id, self.member_id
+                )
+                
+                if new_vote and new_vote.lower() != "supprimer" and new_vote != "DELETE":
+                    emoji = self._get_emoji_from_vote(new_vote)
+                    if emoji:
+                        await conn.execute(
+                            "INSERT INTO votes (poll_id, user_id, emoji) VALUES ($1, $2, $3)",
+                            self.poll_id, self.member_id, emoji
+                        )
+            
+            await interaction.response.send_message("✅ Vote modifié avec succès", ephemeral=True)
+            
+            channel = bot.get_channel(self.poll_data["channel_id"])
+            if channel:
+                try:
+                    message = await channel.fetch_message(self.poll_data["message_id"])
+                    await update_poll_display(message, self.poll_id)
+                except discord.NotFound:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"❌ Erreur lors de la modification: {e}")
+            await interaction.response.send_message("❌ Erreur lors de la modification", ephemeral=True)
+    
+    def _get_emoji_from_vote(self, vote_text: str) -> str:
+        """Retourne l'emoji correspondant au vote"""
+        if self.poll_data["is_presence_poll"]:
+            for label, emoji in [("présent", "✅"), ("present", "✅"), ("✅", "✅"),
+                               ("en attente", "⏳"), ("⏳", "⏳"),
+                               ("absent", "❌"), ("❌", "❌")]:
+                if label in vote_text.lower():
+                    return emoji
+        else:
+            for i, opt in enumerate(self.poll_data["options"]):
+                if opt.lower() in vote_text.lower():
+                    return Config.EMOJIS[i]
+        return None
+
 
 # -------------------- Configuration --------------------
 class Config:
@@ -34,6 +240,9 @@ class Config:
     REMINDER_J_MINUS_2_MAX = 49
     REMINDER_J_MINUS_1_MIN = 23
     REMINDER_J_MINUS_1_MAX = 25
+    
+    # Rôle éditeur de sondage (ID du rôle Discord)
+    EDITOR_ROLE_ID = int(os.getenv("EDITOR_ROLE_ID", "0")) or None
 
 # -------------------- Intents --------------------
 intents = discord.Intents.default()
@@ -168,6 +377,55 @@ class BasePollView(View):
         super().__init__(timeout=None)
         self.poll_id = poll_id
         self.allow_multiple = allow_multiple
+        
+        edit_button = Button(
+            label="Modifier un vote",
+            emoji="✏️",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"edit_vote_{poll_id}"
+        )
+        edit_button.callback = self.edit_vote_callback
+        self.add_item(edit_button)
+    
+    async def edit_vote_callback(self, interaction: discord.Interaction):
+        """Ouvre la vue pour sélectionner un membre"""
+        if not is_editor(interaction):
+            await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
+            return
+        
+        async with db.acquire() as conn:
+            poll = await conn.fetchrow("SELECT * FROM polls WHERE id=$1", self.poll_id)
+            if not poll:
+                await interaction.response.send_message("❌ Sondage introuvable", ephemeral=True)
+                return
+            
+            votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", self.poll_id)
+            votes_dict = {v["user_id"]: v["emoji"] for v in votes}
+        
+        members_data = []
+        channel = bot.get_channel(poll["channel_id"])
+        if channel:
+            for member in channel.members:
+                if not member.bot:
+                    current_vote = votes_dict.get(member.id)
+                    if current_vote:
+                        if poll["is_presence_poll"]:
+                            vote_display = {"✅": "Présent", "⏳": "En attente", "❌": "Absent"}.get(current_vote, current_vote)
+                        else:
+                            idx = Config.EMOJIS.index(current_vote) if current_vote in Config.EMOJIS else -1
+                            vote_display = poll["options"][idx] if idx >= 0 and idx < len(poll["options"]) else current_vote
+                    else:
+                        vote_display = None
+                    members_data.append((member.id, member.display_name, current_vote))
+        
+        members_data.sort(key=lambda x: x[1].lower())
+        
+        view = MemberSelectView(self.poll_id, dict(poll), members_data)
+        await interaction.response.send_message(
+            "Sélectionnez un membre dont vous voulez modifier le vote:",
+            view=view,
+            ephemeral=True
+        )
     
     async def handle_vote(self, interaction: discord.Interaction, emoji: str):
         """Gère un vote (logique commune)"""

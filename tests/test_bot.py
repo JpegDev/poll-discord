@@ -268,7 +268,7 @@ class TestPollView:
         options = [f"Option {i}" for i in range(25)]
         view = PollView(1, options, False)
         
-        assert len(view.children) <= Config.MAX_OPTIONS
+        assert len(view.children) <= Config.MAX_OPTIONS + 1 + 1
     
     def test_poll_view_creates_buttons(self):
         """Test que PollView crée les boutons"""
@@ -277,15 +277,15 @@ class TestPollView:
         options = ["Oui", "Non", "Peut-être"]
         view = PollView(1, options, False)
         
-        assert len(view.children) == 3
+        assert len(view.children) == 4
     
     def test_presence_poll_view(self):
-        """Test que PresencePollView crée les 3 boutons"""
+        """Test que PresencePollView crée les boutons"""
         from bot import PresencePollView
         
         view = PresencePollView(1)
         
-        assert len(view.children) == 3
+        assert len(view.children) == 4
     
     def test_poll_view_allow_multiple(self):
         """Test que PollView gère allow_multiple"""

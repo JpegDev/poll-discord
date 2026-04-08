@@ -9,6 +9,7 @@ Sondage Discord avec boutons interactifs et rappels automatiques.
 - ⏰ Rappels automatiques aux non-votants
 - 🔔 Rappels pour participants "En attente" (J-2, J-1)
 - 📅 Dates d'événement et dates limites
+- ✏️ Modification des votes par les éditeurs (rôle configurable)
 
 ## Installation
 
@@ -21,6 +22,7 @@ pip install -r requirements.txt
 Variables d'environnement :
 - `DATABASE_URL` - URL de la base de données PostgreSQL
 - `TOKEN_DISCORD` - Token du bot Discord
+- `EDITOR_ROLE_ID` - ID du rôle éditeur de sondage (pour modifier les votes)
 
 ## Commandes
 
