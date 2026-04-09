@@ -64,7 +64,7 @@ async def poll_command(
 
 @tree.command(name="delete_poll", description="Supprimer un sondage (admin)")
 @app_commands.describe(poll_id="ID du sondage à supprimer")
-async def delete_poll(interaction: discord.Interaction, poll_ID: int):
+async def delete_poll(interaction: discord.Interaction, poll_id: int):
     """Supprime un sondage et son événement associé"""
     if not is_editor(interaction):
         await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
@@ -95,6 +95,55 @@ async def delete_poll(interaction: discord.Interaction, poll_ID: int):
     except Exception as e:
         logger.error(f"❌ Erreur lors de la suppression: {e}")
         await interaction.response.send_message("❌ Erreur lors de la suppression", ephemeral=True)
+
+
+@tree.command(name="clean_events", description="Supprime les événements orphaned (admin)")
+async def clean_events(interaction: discord.Interaction):
+    """Supprime les événements Discord dont le message a été supprimé"""
+    if not is_editor(interaction):
+        await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
+        return
+    
+    await interaction.response.send_message("🔍 Recherche des événements orphaned...", ephemeral=True)
+    
+    try:
+        from utils.events import delete_scheduled_event
+        
+        async with database.db.acquire() as conn:
+            polls = await conn.fetch("SELECT * FROM polls WHERE event_id IS NOT NULL")
+        
+        removed = 0
+        for poll in polls:
+            if not poll["event_id"]:
+                continue
+            
+            channel = bot.get_channel(poll["channel_id"])
+            if not channel:
+                try:
+                    await delete_scheduled_event(interaction.guild, poll["event_id"])
+                    removed += 1
+                    logger.info(f"Événement {poll['event_id']} supprimé (channel introuvable)")
+                except Exception as e:
+                    logger.warning(f"Impossible de supprimer l'événement {poll['event_id']}: {e}")
+                continue
+            
+            try:
+                message = await channel.fetch_message(poll["message_id"])
+            except discord.NotFound:
+                try:
+                    await delete_scheduled_event(interaction.guild, poll["event_id"])
+                    removed += 1
+                    logger.info(f"Événement {poll['event_id']} supprimé (message introuvable)")
+                except Exception as e:
+                    logger.warning(f"Impossible de supprimer l'événement {poll['event_id']}: {e}")
+            except Exception:
+                pass
+        
+        await interaction.edit_original_response(content=f"✅ {removed} événement(s) orphaned supprimé(s)")
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors du nettoyage: {e}")
+        await interaction.edit_original_response(content="❌ Erreur lors du nettoyage")
 
 
 @tree.command(name="check_polls", description="Vérifie l'état des sondages actifs (admin)")

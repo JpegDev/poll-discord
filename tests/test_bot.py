@@ -124,6 +124,7 @@ class TestPollContentBuilding:
         from utils.poll_utils import _build_poll_content
         
         poll = {
+            "id": 1,
             "question": "Test question?",
             "options": ["Oui", "Non"],
             "is_presence_poll": False,
@@ -148,6 +149,7 @@ class TestPollContentBuilding:
         from utils.poll_utils import _build_poll_content
         
         poll = {
+            "id": 2,
             "question": "Réunion",
             "options": [],
             "is_presence_poll": True,
@@ -175,6 +177,7 @@ class TestPollContentBuilding:
         from utils.poll_utils import _build_poll_content
         
         poll = {
+            "id": 3,
             "question": "Test",
             "options": ["A", "B"],
             "is_presence_poll": False,
@@ -195,6 +198,7 @@ class TestPollContentBuilding:
         from utils.poll_utils import _build_poll_content
         
         poll = {
+            "id": 4,
             "question": "Test",
             "options": ["A", "B"],
             "is_presence_poll": False,
@@ -299,6 +303,126 @@ class TestPollView:
         
         assert view_single.allow_multiple == False
         assert view_multiple.allow_multiple == True
+    
+    def test_poll_view_show_edit_false(self):
+        """Test que PollView sans bouton edit"""
+        from utils.views import PollView
+        
+        view = PollView(1, ["A", "B"], False, show_edit=False)
+        
+        edit_buttons = [c for c in view.children if hasattr(c, 'custom_id') and 'edit' in str(c.custom_id)]
+        assert len(edit_buttons) == 0
+    
+    def test_presence_poll_show_edit_true(self):
+        """Test que PresencePollView avec show_edit=True a le bouton"""
+        from utils.views import PresencePollView
+        
+        view = PresencePollView(1, show_edit=True)
+        
+        edit_buttons = [c for c in view.children if hasattr(c, 'custom_id') and 'edit' in str(c.custom_id)]
+        assert len(edit_buttons) == 1
+
+
+class TestEditorConfig:
+    """Tests pour la configuration éditeur"""
+    
+    def test_editor_role_id_none(self):
+        """Test que EDITOR_ROLE_ID peut être None"""
+        from utils.config import Config
+        assert Config.EDITOR_ROLE_ID is None or isinstance(Config.EDITOR_ROLE_ID, int)
+    
+    def test_is_editor_false_when_no_role(self):
+        """Test is_editor retourne False si pas de rôle configuré"""
+        from utils.config import Config, is_editor
+        
+        mock_interaction = MagicMock()
+        mock_interaction.user.roles = []
+        
+        if Config.EDITOR_ROLE_ID is None:
+            assert is_editor(mock_interaction) == False
+
+
+class TestEventCreation:
+    """Tests pour la création des événements Discord"""
+    
+    def test_create_scheduled_event_signature(self):
+        """Test que create_scheduled_event a les bons paramètres"""
+        from utils.events import create_scheduled_event
+        import inspect
+        
+        sig = inspect.signature(create_scheduled_event)
+        params = list(sig.parameters.keys())
+        
+        assert "guild" in params
+        assert "poll" in params
+
+
+class TestPollContentWithID:
+    """Tests pour l'affichage de l'ID dans le contenu"""
+    
+    def _create_mock_guild_and_channel(self):
+        guild = MagicMock()
+        guild.members = []
+        channel = MagicMock()
+        channel.permissions_for.return_value.read_messages = True
+        return guild, channel
+    
+    def test_poll_content_includes_id(self):
+        """Test que l'ID du poll est affiché"""
+        from utils.poll_utils import _build_poll_content
+        
+        poll = {
+            "id": 42,
+            "question": "Test",
+            "options": ["A", "B"],
+            "is_presence_poll": False,
+            "allow_multiple": False,
+            "event_date": datetime(2024, 12, 25, 20, 0, tzinfo=Config.TZ),
+            "max_date": None
+        }
+        vote_counts = defaultdict(list)
+        user_votes = defaultdict(list)
+        guild, channel = self._create_mock_guild_and_channel()
+        
+        result = _build_poll_content(poll, vote_counts, user_votes, guild, channel, [])
+        
+        assert "ID: 42" in result
+
+
+class TestEditVoteModal:
+    """Tests pour la modal de modification de vote"""
+    
+    def test_emoji_from_vote_presence(self):
+        """Test extraction emoji pour vote présence"""
+        from utils.views import EditVoteSingleModal
+        
+        poll_data = {
+            "is_presence_poll": True,
+            "options": []
+        }
+        member_data = (123, "User", "✅")
+        
+        modal = EditVoteSingleModal(1, poll_data, member_data)
+        
+        assert modal._get_emoji_from_vote("Présent") == "✅"
+        assert modal._get_emoji_from_vote("présent") == "✅"
+        assert modal._get_emoji_from_vote("En attente") == "⏳"
+        assert modal._get_emoji_from_vote("Absent") == "❌"
+    
+    def test_emoji_from_vote_classic(self):
+        """Test extraction emoji pour vote classique"""
+        from utils.views import EditVoteSingleModal
+        
+        poll_data = {
+            "is_presence_poll": False,
+            "options": ["Oui", "Non"]
+        }
+        member_data = (123, "User", "🇦")
+        
+        modal = EditVoteSingleModal(1, poll_data, member_data)
+        
+        assert modal._get_emoji_from_vote("Oui") == "🇦"
+        assert modal._get_emoji_from_vote("Non") == "🇧"
 
 
 if __name__ == "__main__":

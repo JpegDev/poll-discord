@@ -1,0 +1,73 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Create virtual environment
+        run: python -m venv .venv
+        
+      - name: Install dependencies
+        run: |
+          source .venv/bin/activate
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+          
+      - name: Set environment variables
+        run: |
+          echo "DATABASE_URL=postgresql://test:test@localhost:5432/test" >> $GITHUB_ENV
+          echo "TOKEN_DISCORD=mock_token" >> $GITHUB_ENV
+          echo "EDITOR_ROLE_ID=0" >> $GITHUB_ENV
+          
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -v
+          
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Install dependencies
+        run: pip install pyflakes flake8
+          
+      - name: Run linting
+        run: |
+          python -m pyflakes bot.py utils/
+          python -m flake8 --max-line-length=120 bot.py utils/ || true

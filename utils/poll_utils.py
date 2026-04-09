@@ -29,6 +29,7 @@ async def create_poll(interaction: discord.Interaction, question: str, options: 
         message = await interaction.original_response()
 
         event_id = None
+        channel_name = interaction.channel.name
         
         if is_presence and event_date:
             try:
@@ -37,7 +38,7 @@ async def create_poll(interaction: discord.Interaction, question: str, options: 
                     "event_date": event_date,
                     "max_date": max_date
                 }
-                event_id = await create_scheduled_event(interaction.guild, poll_data)
+                event_id = await create_scheduled_event(interaction.guild, poll_data, channel_name)
             except Exception as e:
                 logger.warning(f"Impossible de créer l'événement: {e}")
 

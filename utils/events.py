@@ -5,10 +5,13 @@ from utils.config import Config
 logger = logging.getLogger(__name__)
 
 
-async def create_scheduled_event(guild: discord.Guild, poll: dict) -> int:
+async def create_scheduled_event(guild: discord.Guild, poll: dict, channel_name: str = None) -> int:
     """Crée un événement Discord planifié à partir d'un sondage de présence"""
     try:
-        event_name = poll["question"][:100]
+        if channel_name:
+            event_name = f"#{channel_name}"
+        else:
+            event_name = poll["question"][:100]
         
         event_start = poll["event_date"]
         event_end = event_start + timedelta(hours=2)
