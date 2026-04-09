@@ -1,5 +1,5 @@
 import discord
-from discord.ui import Button, View, Modal, Select
+from discord.ui import Button, View, Select
 from utils.config import Config, is_editor
 from utils import database
 from utils.poll_utils import update_poll_display
