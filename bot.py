@@ -5,12 +5,13 @@ from datetime import datetime, timedelta
 from discord import app_commands
 from discord.ext import commands
 
-from utils.config import Config, logger
+from utils.config import Config, logger, is_editor
 from utils import database
 from utils.views import PollView, PresencePollView
 from utils.modals import DateModal
 from utils.poll_utils import create_poll, update_poll_display
 from utils.reminders import send_reminders, send_non_voters_biweekly_reminders
+from utils.events import delete_scheduled_event
 
 intents = discord.Intents.default()
 intents.members = True
@@ -59,6 +60,41 @@ async def poll_command(
     allow_multiple = not single
     modal = DateModal(question, options, is_presence=False, allow_multiple=allow_multiple)
     await interaction.response.send_modal(modal)
+
+
+@tree.command(name="delete_poll", description="Supprimer un sondage (admin)")
+@app_commands.describe(poll_id="ID du sondage à supprimer")
+async def delete_poll(interaction: discord.Interaction, poll_ID: int):
+    """Supprime un sondage et son événement associé"""
+    if not is_editor(interaction):
+        await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
+        return
+    
+    try:
+        from utils.events import delete_scheduled_event
+        
+        async with database.db.acquire() as conn:
+            poll = await conn.fetchrow("SELECT * FROM polls WHERE id = $1", poll_id)
+            
+            if not poll:
+                await interaction.response.send_message("❌ Sondage introuvable", ephemeral=True)
+                return
+            
+            if poll["event_id"]:
+                try:
+                    await delete_scheduled_event(interaction.guild, poll["event_id"])
+                except Exception as e:
+                    logger.warning(f"Impossible de supprimer l'événement: {e}")
+            
+            await conn.execute("DELETE FROM votes WHERE poll_id = $1", poll_id)
+            await conn.execute("DELETE FROM reminders_sent WHERE poll_id = $1", poll_id)
+            await conn.execute("DELETE FROM polls WHERE id = $1", poll_id)
+        
+        await interaction.response.send_message(f"✅ Sondage {poll_id} supprimé", ephemeral=True)
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de la suppression: {e}")
+        await interaction.response.send_message("❌ Erreur lors de la suppression", ephemeral=True)
 
 
 @tree.command(name="check_polls", description="Vérifie l'état des sondages actifs (admin)")

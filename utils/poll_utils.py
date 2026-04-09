@@ -16,6 +16,9 @@ async def create_poll(interaction: discord.Interaction, question: str, options: 
     """Crée un sondage en base et envoie le message"""
     try:
         from utils.views import PollView, PresencePollView
+        from utils.events import create_scheduled_event
+        
+        event_id = None
         
         if is_presence:
             view = PresencePollView(0, show_edit=False)
@@ -25,14 +28,27 @@ async def create_poll(interaction: discord.Interaction, question: str, options: 
         await interaction.response.send_message(content="📊 _Chargement..._", view=view)
         message = await interaction.original_response()
 
+        event_id = None
+        
+        if is_presence and event_date:
+            try:
+                poll_data = {
+                    "question": question,
+                    "event_date": event_date,
+                    "max_date": max_date
+                }
+                event_id = await create_scheduled_event(interaction.guild, poll_data)
+            except Exception as e:
+                logger.warning(f"Impossible de créer l'événement: {e}")
+
         async with database.db.acquire() as conn:
             poll_id = await conn.fetchval("""
                 INSERT INTO polls (message_id, channel_id, question, options, is_presence_poll, 
-                                  event_date, max_date, allow_multiple)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                                  event_date, max_date, allow_multiple, event_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id
             """, message.id, interaction.channel_id, question, options, is_presence, 
-               event_date, max_date, allow_multiple)
+               event_date, max_date, allow_multiple, event_id)
 
         logger.info(f"✅ Sondage créé: id={poll_id}, question='{question[:50]}', multiple={allow_multiple}")
 
@@ -86,6 +102,9 @@ def _build_poll_content(poll, vote_counts, user_votes, guild, channel, votes) ->
         mode_text = " 🔘 Choix unique" if not poll["allow_multiple"] else " ☑️ Choix multiple"
     
     content_parts = [f"# 📊 {poll['question']}{mode_text}\n"]
+    content_parts.append(f"ID: {poll['id']}_\n")
+    content_parts.append("")
+    _add_dates_section(content_parts, poll)
 
     if poll["is_presence_poll"]:
         _add_presence_votes(content_parts, vote_counts)
@@ -95,7 +114,8 @@ def _build_poll_content(poll, vote_counts, user_votes, guild, channel, votes) ->
     content_parts.append("")
 
     _add_non_voters_section(content_parts, poll, guild, channel, votes, vote_counts)
-    _add_dates_section(content_parts, poll)
+    content_parts.append("")
+    content_parts.append("\u200b") 
 
     return "\n".join(content_parts)
 

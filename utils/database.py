@@ -33,6 +33,7 @@ async def init_db():
                     max_date TIMESTAMP WITH TIME ZONE,
                     is_presence_poll BOOLEAN DEFAULT FALSE,
                     allow_multiple BOOLEAN DEFAULT FALSE,
+                    event_id BIGINT,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
@@ -107,6 +108,11 @@ async def init_db():
                     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                                   WHERE table_name='polls' AND column_name='allow_multiple') THEN
                         ALTER TABLE polls ADD COLUMN allow_multiple BOOLEAN DEFAULT FALSE;
+                    END IF;
+
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                  WHERE table_name='polls' AND column_name='event_id') THEN
+                        ALTER TABLE polls ADD COLUMN event_id BIGINT;
                     END IF;
                 END $$;
             """)

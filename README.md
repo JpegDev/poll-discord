@@ -10,6 +10,8 @@ Sondage Discord avec boutons interactifs et rappels automatiques.
 - 🔔 Rappels pour participants "En attente" (J-2, J-1)
 - 📅 Dates d'événement et dates limites
 - ✏️ Modification des votes par les éditeurs (rôle configurable)
+- 📆 Création automatique d'événement Discord pour les sondages de présence
+- 🗑️ Suppression de l'événement lors de la suppression du sondage
 
 ## Installation
 
@@ -30,6 +32,7 @@ Variables d'environnement :
   - Laissez les choix vides pour un sondage de présence
   - Utilisez `single: true` pour un choix unique
 - `/check_polls` - Vérifier l'état des sondages (admin)
+- `/delete_poll` - Supprimer un sondage et son événement (admin)
 
 ## Tests
 
