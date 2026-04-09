@@ -197,6 +197,9 @@ class MemberSelectView(View):
                 view=EditVoteView(self.poll_id, self.poll_data, member_data[0]),
                 ephemeral=True
             )
+    
+    async def cancel_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("❌ Opération annulée", ephemeral=True)
 
 
 class EditVoteView(View):
