@@ -1,6 +1,5 @@
 import discord
 import logging
-from utils.config import Config
 
 logger = logging.getLogger(__name__)
 

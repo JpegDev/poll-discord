@@ -9,9 +9,7 @@ from utils.config import Config, logger, is_editor
 from utils import database
 from utils.views import PollView, PresencePollView
 from utils.modals import DateModal
-from utils.poll_utils import create_poll, update_poll_display
 from utils.reminders import send_reminders, send_non_voters_biweekly_reminders
-from utils.events import delete_scheduled_event
 
 intents = discord.Intents.default()
 intents.members = True
@@ -128,7 +126,7 @@ async def clean_events(interaction: discord.Interaction):
                 continue
             
             try:
-                message = await channel.fetch_message(poll["message_id"])
+                await channel.fetch_message(poll["message_id"])
             except discord.NotFound:
                 try:
                     await delete_scheduled_event(interaction.guild, poll["event_id"])

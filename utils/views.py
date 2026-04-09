@@ -2,6 +2,7 @@ import discord
 from discord.ui import Button, View, Modal, TextInput, Select
 from utils.config import Config, is_editor
 from utils import database
+from utils.poll_utils import update_poll_display
 import logging
 
 logger = logging.getLogger(__name__)
@@ -49,14 +50,6 @@ class BasePollView(View):
                 for member in members:
                     if not member.bot:
                         current_vote = votes_dict.get(member.id)
-                        if current_vote:
-                            if poll["is_presence_poll"]:
-                                vote_display = {"✅": "Présent", "⏳": "En attente", "❌": "Absent"}.get(current_vote, current_vote)
-                            else:
-                                idx = Config.EMOJIS.index(current_vote) if current_vote in Config.EMOJIS else -1
-                                vote_display = poll["options"][idx] if idx >= 0 and idx < len(poll["options"]) else current_vote
-                        else:
-                            vote_display = None
                         members_data.append((member.id, member.display_name, current_vote))
             except Exception as e:
                 logger.error(f"Erreur lors de la récupération des membres: {e}")

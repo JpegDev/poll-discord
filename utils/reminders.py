@@ -39,10 +39,8 @@ async def send_reminders():
                 except Exception:
                     continue
 
-                guild = channel.guild
                 async with database.db.acquire() as conn:
                     votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
-                voted_user_ids = {v["user_id"] for v in votes}
                 waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
 
                 event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")

@@ -1,8 +1,7 @@
 import discord
-import asyncpg
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from utils.config import Config
 from utils import database
