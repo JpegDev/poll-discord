@@ -1,2 +1,4 @@
 discord.py
 asyncpg
+pytest
+pytest-asyncio
