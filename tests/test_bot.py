@@ -392,8 +392,8 @@ class TestPollContentWithID:
 class TestEditVoteModal:
     """Tests pour la modal de modification de vote"""
     
-    def test_emoji_from_vote_presence(self):
-        """Test extraction emoji pour vote présence"""
+    def test_modal_creation_presence(self):
+        """Test création modal pour vote présence"""
         from utils.views import EditVoteSingleModal
         
         poll_data = {
@@ -404,13 +404,11 @@ class TestEditVoteModal:
         
         modal = EditVoteSingleModal(1, poll_data, member_data)
         
-        assert modal._get_emoji_from_vote("Présent") == "✅"
-        assert modal._get_emoji_from_vote("présent") == "✅"
-        assert modal._get_emoji_from_vote("En attente") == "⏳"
-        assert modal._get_emoji_from_vote("Absent") == "❌"
+        select_item = modal.children[0]
+        assert len(select_item.options) == 4
     
-    def test_emoji_from_vote_classic(self):
-        """Test extraction emoji pour vote classique"""
+    def test_modal_creation_classic(self):
+        """Test création modal pour vote classique"""
         from utils.views import EditVoteSingleModal
         
         poll_data = {
@@ -421,8 +419,8 @@ class TestEditVoteModal:
         
         modal = EditVoteSingleModal(1, poll_data, member_data)
         
-        assert modal._get_emoji_from_vote("Oui") == "🇦"
-        assert modal._get_emoji_from_vote("Non") == "🇧"
+        select_item = modal.children[0]
+        assert len(select_item.options) == 3
 
 
 if __name__ == "__main__":

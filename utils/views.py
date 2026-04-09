@@ -1,5 +1,5 @@
 import discord
-from discord.ui import Button, View, Modal, TextInput, Select
+from discord.ui import Button, View, Modal, Select
 from utils.config import Config, is_editor
 from utils import database
 from utils.poll_utils import update_poll_display
@@ -209,32 +209,54 @@ class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
         self.poll_data = poll_data
         self.member_id, self.member_name, self.current_vote = member_data
         
-        options = []
+        select_options = []
         if poll_data["is_presence_poll"]:
-            options = [
+            vote_options = [
                 ("✅ Présent", "✅"),
                 ("⏳ En attente", "⏳"),
-                ("❌ Absent", "❌"),
-                ("🗑️ Supprimer le vote", "DELETE")
+                ("❌ Absent", "❌")
             ]
         else:
-            for i, opt in enumerate(poll_data["options"]):
-                options.append((opt, Config.EMOJIS[i]))
-            options.append(("🗑️ Supprimer le vote", "DELETE"))
+            vote_options = [(opt, Config.EMOJIS[i]) for i, opt in enumerate(poll_data["options"])]
         
-        options_str = "\n".join([f"• {label}" for label, _ in options])
+        current_label = "Aucun"
+        if self.current_vote:
+            if poll_data["is_presence_poll"]:
+                current_label = {"✅": "Présent", "⏳": "En attente", "❌": "Absent"}.get(self.current_vote, self.current_vote)
+            else:
+                idx = Config.EMOJIS.index(self.current_vote) if self.current_vote in Config.EMOJIS else -1
+                current_label = poll_data["options"][idx] if idx >= 0 and idx < len(poll_data["options"]) else self.current_vote
         
-        self.vote_input = TextInput(
-            label=f"Nouveau vote pour {self.member_name[:20]}",
-            placeholder=f"Actuel: {self.current_vote or 'Aucun'}\n\nOptions:\n{options_str}",
-            required=True,
-            max_length=100
+        for label, emoji in vote_options:
+            select_options.append(discord.SelectOption(
+                label=label,
+                value=emoji,
+                default=(emoji == self.current_vote)
+            ))
+        
+        select_options.append(discord.SelectOption(
+            label="🗑️ Supprimer le vote",
+            value="DELETE",
+            default=(self.current_vote is None)
+        ))
+        
+        select = Select(
+            placeholder=f"Vote actuel: {current_label}",
+            options=select_options,
+            custom_id=f"edit_vote_select_{poll_id}"
         )
-        self.add_item(self.vote_input)
+        select.callback = self.select_callback
+        self.add_item(select)
+        
+        self.selected_vote = None
+    
+    async def select_callback(self, interaction: discord.Interaction):
+        self.selected_vote = interaction.data["values"][0]
+        await self.on_submit(interaction)
     
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            new_vote = self.vote_input.value.strip()
+            new_vote = self.selected_vote if self.selected_vote else None
             
             async with database.db.acquire() as conn:
                 await conn.execute(
@@ -242,13 +264,11 @@ class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
                     self.poll_id, self.member_id
                 )
                 
-                if new_vote and new_vote.lower() != "supprimer" and new_vote != "DELETE":
-                    emoji = self._get_emoji_from_vote(new_vote)
-                    if emoji:
-                        await conn.execute(
-                            "INSERT INTO votes (poll_id, user_id, emoji) VALUES ($1, $2, $3)",
-                            self.poll_id, self.member_id, emoji
-                        )
+                if new_vote and new_vote != "DELETE":
+                    await conn.execute(
+                        "INSERT INTO votes (poll_id, user_id, emoji) VALUES ($1, $2, $3)",
+                        self.poll_id, self.member_id, new_vote
+                    )
             
             await interaction.response.send_message("✅ Vote modifié avec succès", ephemeral=True)
             
@@ -263,18 +283,5 @@ class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
                     
         except Exception as e:
             logger.error(f"❌ Erreur lors de la modification: {e}")
-            await interaction.response.send_message("❌ Erreur lors de la modification", ephemeral=True)
-    
-    def _get_emoji_from_vote(self, vote_text: str) -> str:
-        """Retourne l'emoji correspondant au vote"""
-        if self.poll_data["is_presence_poll"]:
-            for label, emoji in [("présent", "✅"), ("present", "✅"), ("✅", "✅"),
-                               ("en attente", "⏳"), ("⏳", "⏳"),
-                               ("absent", "❌"), ("❌", "❌")]:
-                if label in vote_text.lower():
-                    return emoji
-        else:
-            for i, opt in enumerate(self.poll_data["options"]):
-                if opt.lower() in vote_text.lower():
-                    return Config.EMOJIS[i]
-        return None
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Erreur lors de la modification", ephemeral=True)

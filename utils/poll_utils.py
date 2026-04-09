@@ -102,7 +102,7 @@ def _build_poll_content(poll, vote_counts, user_votes, guild, channel, votes) ->
         mode_text = " 🔘 Choix unique" if not poll["allow_multiple"] else " ☑️ Choix multiple"
     
     content_parts = [f"# 📊 {poll['question']}{mode_text}\n"]
-    content_parts.append(f"ID: {poll['id']}_\n")
+    content_parts.append(f"ID: {poll['id']}\n")
     content_parts.append("")
     _add_dates_section(content_parts, poll)
 

@@ -7,6 +7,7 @@ import discord
 from utils.config import Config
 from utils import database
 from utils.poll_utils import update_poll_display
+from utils.events import check_event_exists
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,20 @@ async def send_reminders():
 
         for poll in polls:
             try:
+                if poll["event_id"]:
+                    guild = None
+                    for g in database.bot.guilds:
+                        if g.get_channel(poll["channel_id"]):
+                            guild = g
+                            break
+                    
+                    if guild and not await check_event_exists(guild, poll["event_id"]):
+                        await conn.execute(
+                            "UPDATE polls SET event_id = NULL WHERE id = $1",
+                            poll["id"]
+                        )
+                        logger.info(f"🧹 Événement orphané nettoyé pour le sondage {poll['id']}")
+
                 if poll["max_date"] and now >= poll["max_date"]:
                     await close_poll(poll)
                     continue
