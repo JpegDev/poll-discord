@@ -192,19 +192,18 @@ class MemberSelectView(View):
         member_id = int(interaction.data["values"][0])
         member_data = [(mid, name, vote) for mid, name, vote in self.members_data if mid == member_id]
         if member_data:
-            await interaction.response.send_modal(
-                EditVoteSingleModal(self.poll_id, self.poll_data, member_data[0])
+            await interaction.response.send_message(
+                f"📝 Modification du vote de **{member_data[0][1]}** - Utilisez le bouton ci-dessous pour sélectionner le nouveau vote.",
+                view=EditVoteView(self.poll_id, self.poll_data, member_data[0]),
+                ephemeral=True
             )
-    
-    async def cancel_callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("❌ Opération annulée", ephemeral=True)
 
 
-class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
-    """Modal pour modifier le vote d'un seul membre"""
+class EditVoteView(View):
+    """Vue pour modifier un vote avec Select"""
     
     def __init__(self, poll_id: int, poll_data: dict, member_data: tuple):
-        super().__init__()
+        super().__init__(timeout=300)
         self.poll_id = poll_id
         self.poll_data = poll_data
         self.member_id, self.member_name, self.current_vote = member_data
@@ -245,19 +244,21 @@ class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
             options=select_options,
             custom_id=f"edit_vote_select_{poll_id}"
         )
-        select.callback = self.select_callback
+        select.callback = self.select_vote_callback
         self.add_item(select)
         
-        self.selected_vote = None
+        cancel_btn = Button(
+            label="Annuler",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"cancel_edit_{poll_id}"
+        )
+        cancel_btn.callback = self.cancel_callback
+        self.add_item(cancel_btn)
     
-    async def select_callback(self, interaction: discord.Interaction):
-        self.selected_vote = interaction.data["values"][0]
-        await self.on_submit(interaction)
-    
-    async def on_submit(self, interaction: discord.Interaction):
+    async def select_vote_callback(self, interaction: discord.Interaction):
+        new_vote = interaction.data["values"][0]
+        
         try:
-            new_vote = self.selected_vote if self.selected_vote else None
-            
             async with database.db.acquire() as conn:
                 await conn.execute(
                     "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
@@ -283,5 +284,10 @@ class EditVoteSingleModal(Modal, title="✏️ Modifier le vote"):
                     
         except Exception as e:
             logger.error(f"❌ Erreur lors de la modification: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("❌ Erreur lors de la modification", ephemeral=True)
+            await interaction.response.send_message("❌ Erreur lors de la modification", ephemeral=True)
+    
+    async def cancel_callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("❌ Opération annulée", ephemeral=True)
+
+
+# Retirer l'ancienne classe EditVoteSingleModal

@@ -390,11 +390,11 @@ class TestPollContentWithID:
 
 
 class TestEditVoteModal:
-    """Tests pour la modal de modification de vote"""
+    """Tests pour la vue de modification de vote"""
     
-    def test_modal_creation_presence(self):
-        """Test création modal pour vote présence"""
-        from utils.views import EditVoteSingleModal
+    def test_view_creation_presence(self):
+        """Test création vue pour vote présence"""
+        from utils.views import EditVoteView
         
         poll_data = {
             "is_presence_poll": True,
@@ -402,14 +402,14 @@ class TestEditVoteModal:
         }
         member_data = (123, "User", "✅")
         
-        modal = EditVoteSingleModal(1, poll_data, member_data)
+        view = EditVoteView(1, poll_data, member_data)
         
-        select_item = modal.children[0]
+        select_item = view.children[0]
         assert len(select_item.options) == 4
     
-    def test_modal_creation_classic(self):
-        """Test création modal pour vote classique"""
-        from utils.views import EditVoteSingleModal
+    def test_view_creation_classic(self):
+        """Test création vue pour vote classique"""
+        from utils.views import EditVoteView
         
         poll_data = {
             "is_presence_poll": False,
@@ -417,9 +417,9 @@ class TestEditVoteModal:
         }
         member_data = (123, "User", "🇦")
         
-        modal = EditVoteSingleModal(1, poll_data, member_data)
+        view = EditVoteView(1, poll_data, member_data)
         
-        select_item = modal.children[0]
+        select_item = view.children[0]
         assert len(select_item.options) == 3
 
 
