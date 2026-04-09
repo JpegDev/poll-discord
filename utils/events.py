@@ -46,4 +46,24 @@ async def delete_scheduled_event(guild: discord.Guild, event_id: int):
         logger.error(f"❌ Erreur lors de la suppression de l'événement {event_id}: {e}")
 
 
+async def check_event_exists(guild: discord.Guild, event_id: int) -> bool:
+    """Vérifie si un événement existe toujours"""
+    try:
+        await guild.fetch_scheduled_event(event_id)
+        return True
+    except discord.NotFound:
+        return False
+    except Exception:
+        return False
+
+
+async def clear_orphaned_event_id(guild: discord.Guild, event_id: int) -> bool:
+    """Vérifie si l'événement existe et clears l'event_id si supprimé manuellement"""
+    exists = await check_event_exists(guild, event_id)
+    if not exists:
+        logger.warning(f"Événement {event_id} supprimé manuellement, nettoyage de la base...")
+        return True
+    return False
+
+
 from datetime import timedelta
