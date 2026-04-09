@@ -23,7 +23,7 @@ async def create_scheduled_event(guild: discord.Guild, poll: dict, channel_name:
             start=event_start,
             end=event_end,
             location="Sondage Discord",
-            privacy_level=discord.ScheduledEventPrivacyLevel.guild_only
+            privacy_level=discord.PrivacyLevel.guild_only
         )
         
         logger.info(f"✅ Événement créé: {event.id} - {event_name}")
