@@ -256,6 +256,7 @@ async def daily_19h_scheduler():
 async def on_ready():
     try:
         database.db = await database.get_db()
+        database.bot = bot
         await database.init_db()
         await tree.sync()
 
