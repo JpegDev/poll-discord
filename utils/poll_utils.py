@@ -103,9 +103,8 @@ def _build_poll_content(poll, vote_counts, user_votes, guild, channel, votes) ->
     
     content_parts = [f"# 📊 {poll['question']}{mode_text}\n"]
     content_parts.append(f"ID: {poll['id']}\n")
-    content_parts.append("")
     _add_dates_section(content_parts, poll)
-
+    content_parts.append("")
     if poll["is_presence_poll"]:
         _add_presence_votes(content_parts, vote_counts)
     else:
