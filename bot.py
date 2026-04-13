@@ -222,6 +222,20 @@ async def reminder_scheduler():
 
     while not bot.is_closed():
         try:
+            if database.bot is None:
+                database.bot = bot
+            
+            now = datetime.now(Config.TZ)
+            
+            if now.weekday() == 4 and now.hour >= 18:
+                logger.info("⏸️ Pas de rappel le vendredi soir")
+                await asyncio.sleep(3600)
+                continue
+            if now.weekday() == 5:
+                logger.info("⏸️ Pas de rappel le samedi")
+                await asyncio.sleep(3600)
+                continue
+            
             await send_reminders()
         except Exception as e:
             logger.error(f"❌ Erreur dans le scheduler de rappels: {e}")
@@ -235,7 +249,19 @@ async def daily_19h_scheduler():
 
     while not bot.is_closed():
         try:
+            if database.bot is None:
+                database.bot = bot
+            
             now = datetime.now(Config.TZ)
+            
+            if now.weekday() == 4 and now.hour >= 18:
+                logger.info("⏸️ Pas de rappel le vendredi soir")
+                await asyncio.sleep(3600)
+                continue
+            if now.weekday() == 5:
+                logger.info("⏸️ Pas de rappel le samedi")
+                await asyncio.sleep(3600)
+                continue
             
             target = now.replace(hour=Config.DAILY_REMINDER_HOUR, minute=0, second=0, microsecond=0)
             if now.hour >= Config.DAILY_REMINDER_HOUR:
