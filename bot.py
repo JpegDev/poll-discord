@@ -235,6 +235,10 @@ async def reminder_scheduler():
                 logger.info("⏸️ Pas de rappel le samedi")
                 await asyncio.sleep(3600)
                 continue
+            if now.weekday() == 6 and now.hour < 18:
+                logger.info("⏸️ Pas de rappel le dimanche avant 18h")
+                await asyncio.sleep(3600)
+                continue
             
             await send_reminders()
         except Exception as e:
@@ -260,6 +264,10 @@ async def daily_19h_scheduler():
                 continue
             if now.weekday() == 5:
                 logger.info("⏸️ Pas de rappel le samedi")
+                await asyncio.sleep(3600)
+                continue
+            if now.weekday() == 6 and now.hour < 18:
+                logger.info("⏸️ Pas de rappel le dimanche avant 18h")
                 await asyncio.sleep(3600)
                 continue
             
