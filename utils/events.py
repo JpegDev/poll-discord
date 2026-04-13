@@ -1,5 +1,6 @@
 import discord
 import logging
+from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,3 @@ async def clear_orphaned_event_id(guild: discord.Guild, event_id: int) -> bool:
         logger.warning(f"Événement {event_id} supprimé manuellement, nettoyage de la base...")
         return True
     return False
-
-
-from datetime import timedelta

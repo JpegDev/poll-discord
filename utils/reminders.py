@@ -24,6 +24,9 @@ async def send_reminders():
 
         for poll in polls:
             try:
+                if not database.bot:
+                    continue
+                
                 if poll["event_id"]:
                     guild = None
                     for g in database.bot.guilds:
@@ -32,10 +35,12 @@ async def send_reminders():
                             break
                     
                     if guild and not await check_event_exists(guild, poll["event_id"]):
-                        await conn.execute(
-                            "UPDATE polls SET event_id = NULL WHERE id = $1",
-                            poll["id"]
-                        )
+                        # Utilisation d'une connexion dédiée, hors du bloc précédent déjà fermé
+                        async with database.db.acquire() as conn:
+                            await conn.execute(
+                                "UPDATE polls SET event_id = NULL WHERE id = $1",
+                                poll["id"]
+                            )
                         logger.info(f"🧹 Événement orphané nettoyé pour le sondage {poll['id']}")
 
                 if poll["max_date"] and now >= poll["max_date"]:
@@ -174,7 +179,8 @@ async def send_non_voters_biweekly_reminders():
                             continue
 
                         guild = channel.guild
-                        votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
+                        async with database.db.acquire() as conn:
+                            votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
                         voted_user_ids = {v["user_id"] for v in votes}
                         waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
 
