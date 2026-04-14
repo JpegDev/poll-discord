@@ -113,7 +113,6 @@ def _build_poll_content(poll, vote_counts, user_votes, guild, channel, votes) ->
     content_parts.append("")
 
     _add_non_voters_section(content_parts, poll, guild, channel, votes, vote_counts)
-    content_parts.append("")
     content_parts.append("\u200b") 
 
     return "\n".join(content_parts)
