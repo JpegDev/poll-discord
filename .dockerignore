@@ -1,0 +1,7 @@
+# Secrets et données locales : jamais dans l'image
+.env
+postgres_data/
+.git/
+.venv/
+__pycache__/
+graft/

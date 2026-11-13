@@ -3,10 +3,17 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 
-from utils.config import Config
+from utils.config import Config, fmt_dt, vote_deadline
 from utils import database
 
 logger = logging.getLogger(__name__)
+
+
+def eligible_user_ids(guild, channel):
+    """Ids des membres qui peuvent lire le salon. None si le cache membres n'est pas chargé (on ne filtre pas)."""
+    if not guild or not guild.chunked:
+        return None
+    return {m.id for m in guild.members if not m.bot and (not channel or channel.permissions_for(m).read_messages)}
 
 
 async def create_poll(interaction: discord.Interaction, question: str, options: list, 
@@ -76,6 +83,11 @@ async def update_poll_display(message: discord.Message, poll_id: int):
                 return
 
             votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll_id)
+
+        # Les votes de ceux qui ont quitté le salon (parti, rôle retiré...) ne comptent plus
+        eligible = eligible_user_ids(message.guild, message.channel)
+        if eligible is not None:
+            votes = [v for v in votes if v["user_id"] in eligible]
 
         vote_counts = defaultdict(list)
         user_votes = defaultdict(list)
@@ -181,13 +193,13 @@ def _add_non_voters_section(content_parts, poll, guild, channel, votes, vote_cou
 def _add_dates_section(content_parts, poll):
     """Ajoute la section des dates au contenu"""
     content_parts.append("")
-    event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+    event_str = fmt_dt(poll["event_date"])
     content_parts.append(f"**📅 Événement :** {event_str}")
 
     if poll["max_date"]:
-        max_str = poll["max_date"].strftime("%d/%m/%Y à %H:%M")
+        max_str = fmt_dt(poll["max_date"])
         content_parts.append(f"**⏰ Date limite de vote :** {max_str}")
 
     now = datetime.now(Config.TZ)
-    if poll["max_date"] and now > poll["max_date"]:
+    if now > vote_deadline(poll):
         content_parts.append("\n🔒 **Le vote est terminé**")

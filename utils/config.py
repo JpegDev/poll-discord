@@ -29,6 +29,22 @@ class Config:
     EDITOR_ROLE_ID = int(os.getenv("EDITOR_ROLE_ID", "0")) or None
 
 
+def fmt_dt(dt) -> str:
+    """Formate une date en heure de Paris (asyncpg renvoie les timestamptz en UTC)"""
+    return dt.astimezone(Config.TZ).strftime("%d/%m/%Y à %H:%M")
+
+
+def vote_deadline(poll):
+    """Fin du vote : la date limite, sinon l'événement lui-même"""
+    return poll["max_date"] or poll["event_date"]
+
+
+def is_quiet_time(now) -> bool:
+    """Pas de rappel du vendredi 18h au dimanche 18h"""
+    wd = now.weekday()
+    return (wd == 4 and now.hour >= 18) or wd == 5 or (wd == 6 and now.hour < 18)
+
+
 def is_editor(interaction) -> bool:
     """Vérifie si l'utilisateur a le rôle éditeur de sondage"""
     if Config.EDITOR_ROLE_ID is None:

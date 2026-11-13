@@ -2,6 +2,8 @@ import discord
 import logging
 from datetime import timedelta
 
+from utils.config import fmt_dt
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,7 +18,7 @@ async def create_scheduled_event(guild: discord.Guild, poll: dict, channel_name:
         event_start = poll["event_date"]
         event_end = event_start + timedelta(hours=2)
         
-        description = f"Sondage créé via bot Discord\nDate limite de vote: {poll['max_date'].strftime('%d/%m/%Y') if poll['max_date'] else 'Aucune'}"
+        description = f"Sondage créé via bot Discord\nDate limite de vote: {fmt_dt(poll['max_date']) if poll['max_date'] else 'Aucune'}"
         
         event = await guild.create_scheduled_event(
             name=event_name,
@@ -55,14 +57,7 @@ async def check_event_exists(guild: discord.Guild, event_id: int) -> bool:
         return True
     except discord.NotFound:
         return False
-    except Exception:
-        return False
-
-
-async def clear_orphaned_event_id(guild: discord.Guild, event_id: int) -> bool:
-    """Vérifie si l'événement existe et clears l'event_id si supprimé manuellement"""
-    exists = await check_event_exists(guild, event_id)
-    if not exists:
-        logger.warning(f"Événement {event_id} supprimé manuellement, nettoyage de la base...")
+    except Exception as e:
+        # Erreur transitoire (API, rate limit...) : on ne conclut pas que l'événement est supprimé
+        logger.warning(f"Vérification de l'événement {event_id} impossible: {e}")
         return True
-    return False

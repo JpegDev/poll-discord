@@ -5,18 +5,21 @@ from datetime import datetime, timedelta
 from discord import app_commands
 from discord.ext import commands
 
-from utils.config import Config, logger, is_editor
+from utils.config import Config, logger, is_editor, is_quiet_time, vote_deadline
 from utils import database
+from utils.events import delete_scheduled_event
 from utils.views import PollView, PresencePollView
 from utils.modals import DateModal
+from utils.poll_utils import update_poll_display
 from utils.reminders import send_reminders, send_non_voters_biweekly_reminders
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
+
+Choix = app_commands.Range[str, 1, 80]  # 80 = longueur max d'un texte de bouton Discord
 
 
 @tree.command(name="poll", description="Créer un sondage")
@@ -34,13 +37,14 @@ tree = bot.tree
     choix9="Neuvième choix",
     choix10="Dixième choix",
 )
+@app_commands.guild_only()
 async def poll_command(
     interaction: discord.Interaction,
     question: str = "Dispo?",
     single: bool = False,
-    choix1: str = None, choix2: str = None, choix3: str = None, choix4: str = None,
-    choix5: str = None, choix6: str = None, choix7: str = None, choix8: str = None,
-    choix9: str = None, choix10: str = None
+    choix1: Choix = None, choix2: Choix = None, choix3: Choix = None, choix4: Choix = None,
+    choix5: Choix = None, choix6: Choix = None, choix7: Choix = None, choix8: Choix = None,
+    choix9: Choix = None, choix10: Choix = None
 ):
     """Commande pour créer un sondage"""
     choices = [choix1, choix2, choix3, choix4, choix5, choix6, choix7, choix8, choix9, choix10]
@@ -62,40 +66,46 @@ async def poll_command(
 
 @tree.command(name="delete_poll", description="Supprimer un sondage (admin)")
 @app_commands.describe(poll_id="ID du sondage à supprimer")
+@app_commands.guild_only()
 async def delete_poll(interaction: discord.Interaction, poll_id: int):
     """Supprime un sondage et son événement associé"""
     if not is_editor(interaction):
         await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
         return
     
+    # Les appels à l'API Discord ci-dessous peuvent dépasser les 3 s accordées pour répondre
+    await interaction.response.defer(ephemeral=True)
+
     try:
-        from utils.events import delete_scheduled_event
-        
         async with database.db.acquire() as conn:
             poll = await conn.fetchrow("SELECT * FROM polls WHERE id = $1", poll_id)
-            
+
             if not poll:
-                await interaction.response.send_message("❌ Sondage introuvable", ephemeral=True)
+                await interaction.followup.send("❌ Sondage introuvable", ephemeral=True)
                 return
-            
+
             if poll["event_id"]:
+                await delete_scheduled_event(interaction.guild, poll["event_id"])
+
+            # Sinon le message reste, et ses boutons renvoient une erreur
+            channel = interaction.guild.get_channel_or_thread(poll["channel_id"])
+            if channel:
                 try:
-                    await delete_scheduled_event(interaction.guild, poll["event_id"])
-                except Exception as e:
-                    logger.warning(f"Impossible de supprimer l'événement: {e}")
-            
-            await conn.execute("DELETE FROM votes WHERE poll_id = $1", poll_id)
-            await conn.execute("DELETE FROM reminders_sent WHERE poll_id = $1", poll_id)
-            await conn.execute("DELETE FROM polls WHERE id = $1", poll_id)
-        
-        await interaction.response.send_message(f"✅ Sondage {poll_id} supprimé", ephemeral=True)
-        
+                    await channel.get_partial_message(poll["message_id"]).delete()
+                except discord.HTTPException as e:  # déjà supprimé, ou plus d'accès au salon
+                    logger.warning(f"Message du sondage {poll_id} non supprimé: {e}")
+
+            await conn.execute("DELETE FROM polls WHERE id = $1", poll_id)  # votes et rappels : ON DELETE CASCADE
+
+        await interaction.followup.send(f"✅ Sondage {poll_id} supprimé", ephemeral=True)
+
     except Exception as e:
         logger.error(f"❌ Erreur lors de la suppression: {e}")
-        await interaction.response.send_message("❌ Erreur lors de la suppression", ephemeral=True)
+        await interaction.followup.send("❌ Erreur lors de la suppression", ephemeral=True)
 
 
 @tree.command(name="clean_events", description="Supprime les événements orphaned (admin)")
+@app_commands.guild_only()
 async def clean_events(interaction: discord.Interaction):
     """Supprime les événements Discord dont le message a été supprimé"""
     if not is_editor(interaction):
@@ -105,8 +115,6 @@ async def clean_events(interaction: discord.Interaction):
     await interaction.response.send_message("🔍 Recherche des événements orphaned...", ephemeral=True)
     
     try:
-        from utils.events import delete_scheduled_event
-        
         async with database.db.acquire() as conn:
             polls = await conn.fetch("SELECT * FROM polls WHERE event_id IS NOT NULL")
         
@@ -145,12 +153,16 @@ async def clean_events(interaction: discord.Interaction):
 
 
 @tree.command(name="check_polls", description="Vérifie l'état des sondages actifs (admin)")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.guild_only()
 async def check_polls(interaction: discord.Interaction):
     """Vérifie l'état des sondages actifs"""
+    if not is_editor(interaction):
+        await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
+        return
+
     try:
         async with database.db.acquire() as conn:
-            polls = await conn.fetch("SELECT * FROM polls")
+            polls = await conn.fetch("SELECT * FROM polls ORDER BY id DESC")
 
         if not polls:
             await interaction.response.send_message("Aucun sondage en base", ephemeral=True)
@@ -158,10 +170,14 @@ async def check_polls(interaction: discord.Interaction):
 
         msg = "📊 **Sondages en base :**\n"
         now = datetime.now(Config.TZ)
-        for p in polls:
-            status = "🟢 Actif" if not p["max_date"] or p["max_date"] > now else "🔴 Fermé"
+        for i, p in enumerate(polls):
+            status = "🟢 Actif" if vote_deadline(p) > now else "🔴 Fermé"
             mode = "Multiple" if p.get("allow_multiple", False) else "Unique"
-            msg += f"\n{status} ID:{p['id']} - {p['question'][:40]} ({mode})"
+            line = f"\n{status} ID:{p['id']} - {p['question'][:40]} ({mode})"
+            if len(msg) + len(line) > Config.MAX_CONTENT_LENGTH - 40:  # place pour la ligne "et N autres"
+                msg += f"\n_… et {len(polls) - i} plus anciens_"
+                break
+            msg += line
 
         await interaction.response.send_message(msg, ephemeral=True)
         
@@ -178,8 +194,8 @@ async def restore_poll_views():
         async with database.db.acquire() as conn:
             now = datetime.now(Config.TZ)
             polls = await conn.fetch("""
-                SELECT * FROM polls 
-                WHERE max_date IS NULL OR max_date > $1
+                SELECT * FROM polls
+                WHERE COALESCE(max_date, event_date) > $1
             """, now)
 
         logger.info(f"🔄 Restauration de {len(polls)} sondages actifs...")
@@ -195,6 +211,8 @@ async def restore_poll_views():
                     message = await channel.fetch_message(poll["message_id"])
                 except discord.NotFound:
                     logger.warning(f"Message {poll['message_id']} introuvable, suppression du sondage {poll['id']}")
+                    if poll["event_id"]:  # sinon l'événement reste orphelin, introuvable par /clean_events
+                        await delete_scheduled_event(channel.guild, poll["event_id"])
                     async with database.db.acquire() as conn:
                         await conn.execute("DELETE FROM polls WHERE id=$1", poll["id"])
                     continue
@@ -222,24 +240,11 @@ async def reminder_scheduler():
 
     while not bot.is_closed():
         try:
-            if database.bot is None:
-                database.bot = bot
-            
-            now = datetime.now(Config.TZ)
-            
-            if now.weekday() == 4 and now.hour >= 18:
-                logger.info("⏸️ Pas de rappel le vendredi soir")
+            if is_quiet_time(datetime.now(Config.TZ)):
+                logger.info("⏸️ Pas de rappel (vendredi 18h → dimanche 18h)")
                 await asyncio.sleep(3600)
                 continue
-            if now.weekday() == 5:
-                logger.info("⏸️ Pas de rappel le samedi")
-                await asyncio.sleep(3600)
-                continue
-            if now.weekday() == 6 and now.hour < 18:
-                logger.info("⏸️ Pas de rappel le dimanche avant 18h")
-                await asyncio.sleep(3600)
-                continue
-            
+
             await send_reminders()
         except Exception as e:
             logger.error(f"❌ Erreur dans le scheduler de rappels: {e}")
@@ -253,56 +258,87 @@ async def daily_19h_scheduler():
 
     while not bot.is_closed():
         try:
-            if database.bot is None:
-                database.bot = bot
-            
             now = datetime.now(Config.TZ)
-            
-            if now.weekday() == 4 and now.hour >= 18:
-                logger.info("⏸️ Pas de rappel le vendredi soir")
-                await asyncio.sleep(3600)
-                continue
-            if now.weekday() == 5:
-                logger.info("⏸️ Pas de rappel le samedi")
-                await asyncio.sleep(3600)
-                continue
-            if now.weekday() == 6 and now.hour < 18:
-                logger.info("⏸️ Pas de rappel le dimanche avant 18h")
-                await asyncio.sleep(3600)
-                continue
-            
             target = now.replace(hour=Config.DAILY_REMINDER_HOUR, minute=0, second=0, microsecond=0)
             if now.hour >= Config.DAILY_REMINDER_HOUR:
                 target += timedelta(days=1)
-            
-            wait_seconds = (target - now).total_seconds()
+
+            # Pas target - now : avec la même ZoneInfo, Python ignore le changement d'heure
+            wait_seconds = target.timestamp() - now.timestamp()
             logger.info(f"⏰ Prochain rappel quotidien dans {wait_seconds/3600:.1f}h ({target})")
             await asyncio.sleep(wait_seconds)
-            
+
+            # Le contrôle se fait après le sleep : c'est l'heure d'envoi qui compte
+            if is_quiet_time(datetime.now(Config.TZ)):
+                logger.info("⏸️ Pas de rappel (vendredi 18h → dimanche 18h)")
+                continue
+
             await send_non_voters_biweekly_reminders()
-            
+
         except Exception as e:
             logger.error(f"❌ Erreur dans le scheduler quotidien: {e}")
             await asyncio.sleep(3600)
 
 
+async def refresh_active_polls(guild, channel_id=None):
+    """Réaffiche les sondages actifs : votants/non-votants à jour après un changement de membres ou de droits"""
+    try:
+        now = datetime.now(Config.TZ)
+        async with database.db.acquire() as conn:
+            polls = await conn.fetch(
+                "SELECT id, channel_id, message_id FROM polls WHERE (max_date IS NULL OR max_date > $1) AND event_date > $1",
+                now
+            )
+        for poll in polls:
+            if channel_id and poll["channel_id"] != channel_id:
+                continue
+            channel = guild.get_channel(poll["channel_id"])
+            if channel:  # None = sondage d'un autre serveur
+                # ponytail: une édition par sondage et par événement, pas de debounce ; à ajouter si les rôles sont modifiés en masse
+                await update_poll_display(channel.get_partial_message(poll["message_id"]), poll["id"])
+    except Exception as e:
+        logger.error(f"❌ Erreur lors du rafraîchissement des sondages: {e}")
+
+
+@bot.event
+async def on_member_join(member):
+    await refresh_active_polls(member.guild)
+
+
+@bot.event
+async def on_member_remove(member):
+    await refresh_active_polls(member.guild)
+
+
+@bot.event
+async def on_member_update(before, after):
+    if before.roles != after.roles:
+        await refresh_active_polls(after.guild)
+
+
+@bot.event
+async def on_guild_channel_update(before, after):
+    if before.overwrites != after.overwrites:
+        await refresh_active_polls(after.guild, after.id)
+
+
+@bot.event
+async def setup_hook():
+    """Exécuté une seule fois au démarrage (contrairement à on_ready, rappelé à chaque reconnexion)"""
+    database.db = await database.get_db()
+    database.bot = bot
+    await database.init_db()
+    await tree.sync()
+
+    # Tâches de fond : elles attendent elles-mêmes bot.wait_until_ready()
+    asyncio.create_task(restore_poll_views())
+    asyncio.create_task(reminder_scheduler())
+    asyncio.create_task(daily_19h_scheduler())
+
+
 @bot.event
 async def on_ready():
-    try:
-        database.db = await database.get_db()
-        database.bot = bot
-        await database.init_db()
-        await tree.sync()
-
-        await restore_poll_views()
-
-        bot.loop.create_task(reminder_scheduler())
-        bot.loop.create_task(daily_19h_scheduler())
-
-        logger.info(f"✅ Bot connecté : {bot.user}")
-    except Exception as e:
-        logger.error(f"❌ Erreur critique lors du démarrage: {e}")
-        raise
+    logger.info(f"✅ Bot connecté : {bot.user}")
 
 
 if __name__ == "__main__":

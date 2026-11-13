@@ -19,9 +19,9 @@ async def get_db():
 
 
 async def init_db():
-    """Initialise les tables de la base de données avec migration"""
+    """Initialise les tables de la base de données (idempotent, une seule transaction)"""
     try:
-        async with db.acquire() as conn:
+        async with db.acquire() as conn, conn.transaction():
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS polls (
                     id SERIAL PRIMARY KEY,
@@ -34,51 +34,19 @@ async def init_db():
                     is_presence_poll BOOLEAN DEFAULT FALSE,
                     allow_multiple BOOLEAN DEFAULT FALSE,
                     event_id BIGINT,
-                    created_at TIMESTAMP DEFAULT NOW()
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
-            
-            old_structure = await conn.fetchval("""
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.table_constraints 
-                    WHERE table_name='votes' 
-                    AND constraint_type='PRIMARY KEY'
-                    AND constraint_name='votes_pkey'
-                )
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS votes (
+                    poll_id INTEGER REFERENCES polls(id) ON DELETE CASCADE,
+                    user_id BIGINT,
+                    emoji TEXT,
+                    PRIMARY KEY (poll_id, user_id, emoji)
+                );
             """)
-            
-            if old_structure:
-                logger.info("🔄 Migration de la table votes détectée...")
-                
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS votes_new (
-                        poll_id INTEGER REFERENCES polls(id) ON DELETE CASCADE,
-                        user_id BIGINT,
-                        emoji TEXT,
-                        PRIMARY KEY (poll_id, user_id, emoji)
-                    );
-                """)
-                
-                await conn.execute("""
-                    INSERT INTO votes_new (poll_id, user_id, emoji)
-                    SELECT poll_id, user_id, emoji FROM votes
-                    ON CONFLICT DO NOTHING;
-                """)
-                
-                await conn.execute("DROP TABLE votes;")
-                await conn.execute("ALTER TABLE votes_new RENAME TO votes;")
-                
-                logger.info("✅ Migration de la table votes terminée")
-            else:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS votes (
-                        poll_id INTEGER REFERENCES polls(id) ON DELETE CASCADE,
-                        user_id BIGINT,
-                        emoji TEXT,
-                        PRIMARY KEY (poll_id, user_id, emoji)
-                    );
-                """)
-            
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS reminders_sent (
                     poll_id INTEGER REFERENCES polls(id) ON DELETE CASCADE,
@@ -86,37 +54,29 @@ async def init_db():
                     reminder_type TEXT
                 );
             """)
-            
+
+            # Colonnes ajoutées après la première version
             await conn.execute("""
-                DO $$ 
-                BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                  WHERE table_name='polls' AND column_name='event_date') THEN
-                        ALTER TABLE polls ADD COLUMN event_date TIMESTAMP WITH TIME ZONE;
-                    END IF;
-
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                  WHERE table_name='polls' AND column_name='max_date') THEN
-                        ALTER TABLE polls ADD COLUMN max_date TIMESTAMP WITH TIME ZONE;
-                    END IF;
-
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                  WHERE table_name='polls' AND column_name='is_presence_poll') THEN
-                        ALTER TABLE polls ADD COLUMN is_presence_poll BOOLEAN DEFAULT FALSE;
-                    END IF;
-                    
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                  WHERE table_name='polls' AND column_name='allow_multiple') THEN
-                        ALTER TABLE polls ADD COLUMN allow_multiple BOOLEAN DEFAULT FALSE;
-                    END IF;
-
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                                  WHERE table_name='polls' AND column_name='event_id') THEN
-                        ALTER TABLE polls ADD COLUMN event_id BIGINT;
-                    END IF;
-                END $$;
+                ALTER TABLE polls
+                    ADD COLUMN IF NOT EXISTS event_date TIMESTAMP WITH TIME ZONE,
+                    ADD COLUMN IF NOT EXISTS max_date TIMESTAMP WITH TIME ZONE,
+                    ADD COLUMN IF NOT EXISTS is_presence_poll BOOLEAN DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS allow_multiple BOOLEAN DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS event_id BIGINT;
             """)
-            
+
+            # created_at était un TIMESTAMP sans fuseau (UTC côté Postgres) : on le rend explicite
+            created_at_type = await conn.fetchval("""
+                SELECT data_type FROM information_schema.columns
+                WHERE table_schema = current_schema() AND table_name = 'polls' AND column_name = 'created_at'
+            """)
+            if created_at_type == "timestamp without time zone":
+                await conn.execute("""
+                    ALTER TABLE polls ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                    USING created_at AT TIME ZONE 'UTC'
+                """)
+                logger.info("🔄 polls.created_at migré en TIMESTAMPTZ")
+
         logger.info("✅ Base de données initialisée")
     except Exception as e:
         logger.error(f"❌ Erreur lors de l'initialisation de la DB: {e}")
