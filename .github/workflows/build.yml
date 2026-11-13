@@ -40,7 +40,6 @@ jobs:
         run: |
           source .venv/bin/activate
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
           
       - name: Set environment variables
         run: |
@@ -65,9 +64,8 @@ jobs:
           python-version: '3.12'
           
       - name: Install dependencies
-        run: pip install pyflakes flake8
+        run: pip install pyflakes
           
       - name: Run linting
         run: |
           python -m pyflakes bot.py utils/
-          python -m flake8 --max-line-length=120 bot.py utils/ || true

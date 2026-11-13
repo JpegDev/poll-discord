@@ -292,6 +292,7 @@ async def test_check_polls_stays_under_discord_limit(monkeypatch):
     now = datetime.now(Config.TZ)
     polls = [dict(id=i, question="x" * 60, max_date=None, event_date=now, allow_multiple=False) for i in range(200)]
     monkeypatch.setattr(database, "db", fake_pool(fake_conn(fetch=polls)))
+    monkeypatch.setattr(bot, "is_editor", lambda i: True)
     interaction = Mock()
     interaction.response.send_message = AsyncMock()
     await bot.check_polls.callback(interaction)
@@ -355,3 +356,64 @@ async def test_restore_deletes_event_when_message_is_gone(monkeypatch):
 
     await bot.restore_poll_views()
     delete_event.assert_awaited_once_with(channel.guild, 99)
+
+
+# --- Audit 3 : DM découpés, /delete_poll, rappel hebdo du week-end, /check_polls réservé aux éditeurs ---
+
+def test_split_message_keeps_every_reminder_under_discord_limit():
+    from utils.reminders import _split_message
+    items = [f"{i}. " + "x" * 300 for i in range(20)] + ["y" * 5000]
+    messages = _split_message("titre", items)
+    assert len(messages) > 1 and all(len(m) <= Config.MAX_CONTENT_LENGTH for m in messages)
+    assert all(f"{i}. " in "".join(messages) for i in range(20))
+
+
+async def test_delete_poll_defers_and_deletes_the_message(monkeypatch):
+    import bot
+    monkeypatch.setattr(bot, "is_editor", lambda i: True)
+    monkeypatch.setattr(bot, "delete_scheduled_event", AsyncMock())
+    conn = fake_conn(fetchrow=dict(id=1, channel_id=2, message_id=3, event_id=None))
+    monkeypatch.setattr(database, "db", fake_pool(conn))
+    interaction = Mock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+    partial = interaction.guild.get_channel_or_thread.return_value.get_partial_message.return_value
+    partial.delete = AsyncMock()
+
+    await bot.delete_poll.callback(interaction, 1)
+
+    interaction.response.defer.assert_awaited_once()
+    partial.delete.assert_awaited_once()
+    assert "supprimé" in interaction.followup.send.await_args.args[0]
+
+
+async def test_weekly_reminder_sent_on_sunday_for_poll_created_on_saturday(monkeypatch):
+    from utils import reminders
+    sunday_19h = datetime(2026, 11, 22, 19, 0, tzinfo=Config.TZ)
+    monkeypatch.setattr(reminders, "datetime", Mock(now=Mock(return_value=sunday_19h)))
+    monkeypatch.setattr(reminders, "_reminder_already_sent", AsyncMock(return_value=False))
+    monkeypatch.setattr(reminders, "_mark_reminder_sent", AsyncMock())
+    send = AsyncMock()
+    monkeypatch.setattr(reminders, "_send_grouped_reminders", send)
+    poll = dict(id=1, channel_id=2, message_id=3, event_id=None, is_presence_poll=True, question="q", max_date=None,
+                event_date=sunday_19h + timedelta(days=10), created_at=datetime(2026, 11, 14, 19, 0, tzinfo=Config.TZ))
+    conn = fake_conn()
+    conn.fetch.side_effect = [[poll], [{"user_id": 10, "emoji": "⏳"}]]
+    monkeypatch.setattr(database, "db", fake_pool(conn))
+    channel = Mock(fetch_message=AsyncMock(return_value=Mock(jump_url="http://x")))
+    channel.name = "salon"
+    channel.guild.chunked = False
+    monkeypatch.setattr(database, "bot", Mock(get_channel=Mock(return_value=channel)))
+
+    await reminders.send_reminders()
+
+    assert "hebdomadaire" in send.await_args.args[0][10][0]
+
+
+async def test_check_polls_refused_without_editor_role(monkeypatch):
+    import bot
+    monkeypatch.setattr(bot, "is_editor", lambda i: False)
+    interaction = Mock()
+    interaction.response.send_message = AsyncMock()
+    await bot.check_polls.callback(interaction)
+    assert "rôle éditeur" in interaction.response.send_message.await_args.args[0]

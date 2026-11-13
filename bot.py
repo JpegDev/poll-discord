@@ -73,29 +73,35 @@ async def delete_poll(interaction: discord.Interaction, poll_id: int):
         await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
         return
     
+    # Les appels à l'API Discord ci-dessous peuvent dépasser les 3 s accordées pour répondre
+    await interaction.response.defer(ephemeral=True)
+
     try:
         async with database.db.acquire() as conn:
             poll = await conn.fetchrow("SELECT * FROM polls WHERE id = $1", poll_id)
-            
+
             if not poll:
-                await interaction.response.send_message("❌ Sondage introuvable", ephemeral=True)
+                await interaction.followup.send("❌ Sondage introuvable", ephemeral=True)
                 return
-            
+
             if poll["event_id"]:
+                await delete_scheduled_event(interaction.guild, poll["event_id"])
+
+            # Sinon le message reste, et ses boutons renvoient une erreur
+            channel = interaction.guild.get_channel_or_thread(poll["channel_id"])
+            if channel:
                 try:
-                    await delete_scheduled_event(interaction.guild, poll["event_id"])
-                except Exception as e:
-                    logger.warning(f"Impossible de supprimer l'événement: {e}")
-            
-            await conn.execute("DELETE FROM votes WHERE poll_id = $1", poll_id)
-            await conn.execute("DELETE FROM reminders_sent WHERE poll_id = $1", poll_id)
-            await conn.execute("DELETE FROM polls WHERE id = $1", poll_id)
-        
-        await interaction.response.send_message(f"✅ Sondage {poll_id} supprimé", ephemeral=True)
-        
+                    await channel.get_partial_message(poll["message_id"]).delete()
+                except discord.HTTPException as e:  # déjà supprimé, ou plus d'accès au salon
+                    logger.warning(f"Message du sondage {poll_id} non supprimé: {e}")
+
+            await conn.execute("DELETE FROM polls WHERE id = $1", poll_id)  # votes et rappels : ON DELETE CASCADE
+
+        await interaction.followup.send(f"✅ Sondage {poll_id} supprimé", ephemeral=True)
+
     except Exception as e:
         logger.error(f"❌ Erreur lors de la suppression: {e}")
-        await interaction.response.send_message("❌ Erreur lors de la suppression", ephemeral=True)
+        await interaction.followup.send("❌ Erreur lors de la suppression", ephemeral=True)
 
 
 @tree.command(name="clean_events", description="Supprime les événements orphaned (admin)")
@@ -147,10 +153,13 @@ async def clean_events(interaction: discord.Interaction):
 
 
 @tree.command(name="check_polls", description="Vérifie l'état des sondages actifs (admin)")
-@app_commands.checks.has_permissions(administrator=True)
 @app_commands.guild_only()
 async def check_polls(interaction: discord.Interaction):
     """Vérifie l'état des sondages actifs"""
+    if not is_editor(interaction):
+        await interaction.response.send_message("❌ Tu n'as pas le rôle éditeur de sondage", ephemeral=True)
+        return
+
     try:
         async with database.db.acquire() as conn:
             polls = await conn.fetch("SELECT * FROM polls ORDER BY id DESC")
@@ -254,7 +263,8 @@ async def daily_19h_scheduler():
             if now.hour >= Config.DAILY_REMINDER_HOUR:
                 target += timedelta(days=1)
 
-            wait_seconds = (target - now).total_seconds()
+            # Pas target - now : avec la même ZoneInfo, Python ignore le changement d'heure
+            wait_seconds = target.timestamp() - now.timestamp()
             logger.info(f"⏰ Prochain rappel quotidien dans {wait_seconds/3600:.1f}h ({target})")
             await asyncio.sleep(wait_seconds)
 

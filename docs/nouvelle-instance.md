@@ -38,24 +38,32 @@ git clone https://github.com/JpegDev/poll-discord.git poll-discord-NOMSERVEUR
 cd poll-discord-NOMSERVEUR
 ```
 
-Éditer `docker-compose.yml` dans ce nouveau dossier. Quatre choses à changer :
+Créer le fichier `.env` (ignoré par git et par Docker) à partir de l'exemple, puis le remplir :
+
+```bash
+cp .env.example .env
+```
+
+```ini
+TOKEN_DISCORD=le_token_du_nouveau_bot     # token de l'étape 1
+EDITOR_ROLE_ID=123456789012345678         # rôle de l'étape 3
+POSTGRES_PASSWORD=un_mot_de_passe_solide  # sans @ / : # ?
+```
+
+Si une autre instance tourne sur la même machine, éditer aussi `docker-compose.yml` :
 
 ```yaml
 services:
   discord-bot:
-    container_name: discord-bot-NOMSERVEUR          # 1. nom unique
-    environment:
-      - TOKEN_DISCORD=le_token_du_nouveau_bot       # 2. token de l'étape 1
-      - DATABASE_URL=postgresql://user:password@db:5432/sondages
-      - EDITOR_ROLE_ID=123456789012345678           # 3. à AJOUTER : rôle de l'étape 3
+    container_name: discord-bot-NOMSERVEUR          # nom unique
   db:
-    container_name: discord_postgres-NOMSERVEUR     # 1. nom unique
+    container_name: discord_postgres-NOMSERVEUR     # nom unique
     ports:
-      - "127.0.0.1:5433:5432"                       # 4. port hôte différent (ou supprimer le bloc ports)
+      - "127.0.0.1:5433:5432"                       # port hôte différent (ou supprimer le bloc ports)
 ```
 
-- Gardez `DATABASE_URL` tel quel : le bot joint la base par le réseau interne de Docker (`db`), pas par le port publié.
-- Changez le mot de passe `password` (dans `DATABASE_URL` **et** `POSTGRES_PASSWORD`) si la machine est accessible par d'autres.
+- Le bot joint la base par le réseau interne de Docker (`db`), pas par le port publié.
+- `POSTGRES_PASSWORD` n'est appliqué qu'à la création de la base : le changer ensuite dans `.env` ne change pas celui de la base existante.
 - Le volume `./postgres_data` est relatif au dossier : la base de cette instance est donc indépendante.
 
 Lancer :
@@ -81,7 +89,7 @@ Le log doit afficher « Base de données initialisée » puis « Bot connecté �
 | Mettre à jour | `git pull && docker compose up -d --build` |
 | Arrêter | `docker compose down` (la base est conservée) |
 
-Pensez à mettre à jour **chaque instance** séparément quand le code évolue. Attention : `git pull` peut signaler un conflit si vous avez modifié `docker-compose.yml` ; dans ce cas, `git stash`, `git pull`, `git stash pop`.
+Pensez à mettre à jour **chaque instance** séparément quand le code évolue. Les secrets sont dans `.env`, que `git pull` ne touche pas. Si vous avez modifié `docker-compose.yml` (noms, port) et que `git pull` signale un conflit : `git stash`, `git pull`, `git stash pop`.
 
 ## Dépannage
 
@@ -89,7 +97,7 @@ Pensez à mettre à jour **chaque instance** séparément quand le code évolue.
 |---|---|
 | Le bot s'arrête au démarrage avec `PrivilegedIntentsRequired` | **Server Members Intent** non activé (étape 1) |
 | `/poll` n'apparaît pas | attendre quelques minutes ; vérifier que l'invitation contient `applications.commands` |
-| « Tu n'as pas le rôle éditeur de sondage » | `EDITOR_ROLE_ID` absent ou erroné dans le compose (id du rôle **de ce serveur**) |
+| « Tu n'as pas le rôle éditeur de sondage » | `EDITOR_ROLE_ID` absent ou erroné dans `.env` (id du rôle **de ce serveur**) |
 | Le sondage ne se met pas à jour, pas de rappels | le bot n'a pas accès au salon (View Channels / Read Message History) |
 | Pas d'événement Discord créé | permission **Manage Events** manquante |
 | `port is already allocated` | le port hôte de la base est déjà pris par l'autre instance : changer `5433` |

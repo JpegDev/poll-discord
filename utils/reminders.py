@@ -87,15 +87,15 @@ async def send_reminders():
                 else:
                     if poll["is_presence_poll"]:
                         created_at = poll["created_at"].astimezone(Config.TZ)
-                        weeks_since_creation = (now - created_at).days // 7
-                        for week in range(1, weeks_since_creation + 1):
-                            if not await _reminder_already_sent(poll["id"], f"weekly_waiting_{week}"):
-                                target_week_date = created_at + timedelta(weeks=week)
-                                if target_week_date.date() == now.date() and 18 <= now.hour <= 20:
-                                    for uid in waiting_user_ids:
-                                        user_reminders[uid].append(f"📅 **Rappel hebdomadaire** — {poll_summary}")
-                                    await _mark_reminder_sent(poll["id"], f"weekly_waiting_{week}")
-                                    logger.info(f"📨 Rappel hebdo semaine {week} marqué pour le sondage {poll['id']}")
+                        # Un rappel par semaine écoulée, le premier soir (18h-20h) hors pause du week-end :
+                        # un sondage créé un samedi est rappelé le dimanche soir, pas jamais
+                        week = (now - created_at).days // 7
+                        if week >= 1 and 18 <= now.hour <= 20 \
+                                and not await _reminder_already_sent(poll["id"], f"weekly_waiting_{week}"):
+                            for uid in waiting_user_ids:
+                                user_reminders[uid].append(f"📅 **Rappel hebdomadaire** — {poll_summary}")
+                            await _mark_reminder_sent(poll["id"], f"weekly_waiting_{week}")
+                            logger.info(f"📨 Rappel hebdo semaine {week} marqué pour le sondage {poll['id']}")
 
             except Exception as e:
                 logger.error(f"❌ Erreur lors du traitement des rappels pour le sondage {poll['id']}: {e}")
@@ -119,15 +119,28 @@ async def _send_grouped_reminders(user_reminders, title):
         if not member or member.bot:
             continue
         try:
-            lines = "\n\n".join(f"{i+1}. {r}" for i, r in enumerate(reminders))
-            msg = f"{title}\n\n{lines}"
-            await member.send(msg)
+            for msg in _split_message(title, [f"{i+1}. {r}" for i, r in enumerate(reminders)]):
+                await member.send(msg)
             logger.info(f"📨 DM groupé envoyé à {user_id} ({len(reminders)} rappels)")
         except discord.Forbidden:
             logger.warning(f"Impossible d'envoyer un DM à {user_id} (DM fermés)")
         except Exception as e:
             logger.error(f"❌ Erreur lors de l'envoi du DM groupé à {user_id}: {e}")
         await asyncio.sleep(1)
+
+
+def _split_message(title, items, limit=Config.MAX_CONTENT_LENGTH):
+    """Regroupe les rappels en messages de moins de `limit` caractères (limite Discord)"""
+    messages, current = [], title
+    for item in items:
+        item = item[:limit - 2]  # un rappel seul ne doit jamais dépasser la limite
+        if len(current) + 2 + len(item) > limit:
+            messages.append(current)
+            current = item
+        else:
+            current += "\n\n" + item
+    messages.append(current)
+    return messages
 
 
 async def _reminder_already_sent(poll_id: int, reminder_type: str) -> bool:

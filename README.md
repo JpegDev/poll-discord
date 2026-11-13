@@ -32,8 +32,8 @@ Pour créer le bot sur Discord et le déployer (y compris pour **un autre serveu
 
 ## Configuration
 
-Variables d'environnement :
-- `DATABASE_URL` - URL de la base de données PostgreSQL
+Variables d'environnement, à mettre dans un fichier `.env` (voir `.env.example`, ignoré par git et par Docker) :
+- `POSTGRES_PASSWORD` - Mot de passe de la base (docker compose construit `DATABASE_URL` avec)
 - `TOKEN_DISCORD` - Token du bot Discord
 - `EDITOR_ROLE_ID` - ID du rôle éditeur de sondage (pour modifier les votes)
 
