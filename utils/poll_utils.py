@@ -3,7 +3,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 
-from utils.config import Config, fmt_dt
+from utils.config import Config, fmt_dt, vote_deadline
 from utils import database
 
 logger = logging.getLogger(__name__)
@@ -201,5 +201,5 @@ def _add_dates_section(content_parts, poll):
         content_parts.append(f"**⏰ Date limite de vote :** {max_str}")
 
     now = datetime.now(Config.TZ)
-    if poll["max_date"] and now > poll["max_date"]:
+    if now > vote_deadline(poll):
         content_parts.append("\n🔒 **Le vote est terminé**")

@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import discord
 
-from utils.config import Config, fmt_dt
+from utils.config import Config, fmt_dt, vote_deadline
 from utils import database
 from utils.poll_utils import update_poll_display, eligible_user_ids
 from utils.events import check_event_exists
@@ -43,12 +43,9 @@ async def send_reminders():
                             )
                         logger.info(f"🧹 Événement orphané nettoyé pour le sondage {poll['id']}")
 
-                if poll["max_date"] and now >= poll["max_date"]:
+                if now >= vote_deadline(poll):
                     await close_poll(poll)
                     continue
-
-                if poll["event_date"] <= now:
-                    continue  # événement passé : plus de rappel
 
                 channel = database.bot.get_channel(poll["channel_id"])
                 if not channel:
@@ -232,6 +229,7 @@ async def close_poll(poll):
         message = await channel.fetch_message(poll["message_id"])
     except discord.NotFound:
         logger.warning(f"Message {poll['message_id']} introuvable lors de la fermeture")
+        await _mark_reminder_sent(poll["id"], 'closed')  # définitif : inutile de réessayer chaque heure
         return
     except Exception as e:
         logger.error(f"❌ Erreur lors de la récupération du message: {e}")
@@ -253,7 +251,10 @@ async def close_poll(poll):
 
         user_reminders = defaultdict(list)
 
-        for member in guild.members:
+        # Sans date limite, le vote se ferme au début de l'événement : pas de DM « vote terminé »
+        # (évite aussi d'en envoyer pour tous les anciens sondages sans date limite au déploiement)
+        members = guild.members if poll["max_date"] else []
+        for member in members:
             if member.bot:
                 continue
             if not channel.permissions_for(member).read_messages:

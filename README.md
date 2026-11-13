@@ -11,7 +11,7 @@ Sondage Discord avec boutons interactifs et rappels automatiques.
 - 📊 Sondages classiques avec choix multiples ou choix unique
 - ✅ Sondages de présence (Présent/En attente/Absent)
 - 📅 Dates d'événement et dates limites (heure de Paris)
-- 🔒 Les votes sont refusés après la date limite ; les boutons sont retirés à la fermeture
+- 🔒 Les votes sont refusés après la date limite (ou, sans date limite, au début de l'événement) ; les boutons sont retirés à la fermeture
 - 👥 Les votes de ceux qui n'ont plus accès au salon (départ, rôle retiré) ne sont plus comptés ; un nouvel arrivant peut voter tant que le sondage est ouvert. Le sondage se met à jour à chaque arrivée, départ ou changement de rôle
 - ⏰ Rappels automatiques aux non-votants (tous les 2 jours à 19h)
 - 🔔 Rappels pour participants "En attente" (J-2, J-1, puis hebdomadaires sans date limite)
@@ -47,7 +47,8 @@ Toutes les commandes sont réservées aux serveurs (inutilisables en message pri
 - `/poll` - Créer un sondage
   - Laissez les choix vides pour un sondage de présence
   - Utilisez `single: true` pour un choix unique
-  - Dates au format `JJ/MM/AAAA` ou `JJ/MM/AAAA-HH:mm` ; sans heure, **02:00** est utilisée
+  - Dates au format `JJ/MM/AAAA` ou `JJ/MM/AAAA-HH:mm` ; sans heure, **23:59** est utilisée (toute la journée) ; une date limite sans heure le jour même de l'événement s'arrête à l'heure de l'événement
+  - 80 caractères maximum par choix
 - `/check_polls` - Vérifier l'état des sondages (admin)
 - `/delete_poll` - Supprimer un sondage et son événement (rôle éditeur)
 - `/clean_events` - Supprimer les événements orphanés (rôle éditeur)

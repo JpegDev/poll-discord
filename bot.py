@@ -5,8 +5,9 @@ from datetime import datetime, timedelta
 from discord import app_commands
 from discord.ext import commands
 
-from utils.config import Config, logger, is_editor, is_quiet_time
+from utils.config import Config, logger, is_editor, is_quiet_time, vote_deadline
 from utils import database
+from utils.events import delete_scheduled_event
 from utils.views import PollView, PresencePollView
 from utils.modals import DateModal
 from utils.poll_utils import update_poll_display
@@ -17,6 +18,8 @@ intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
+
+Choix = app_commands.Range[str, 1, 80]  # 80 = longueur max d'un texte de bouton Discord
 
 
 @tree.command(name="poll", description="Créer un sondage")
@@ -39,9 +42,9 @@ async def poll_command(
     interaction: discord.Interaction,
     question: str = "Dispo?",
     single: bool = False,
-    choix1: str = None, choix2: str = None, choix3: str = None, choix4: str = None,
-    choix5: str = None, choix6: str = None, choix7: str = None, choix8: str = None,
-    choix9: str = None, choix10: str = None
+    choix1: Choix = None, choix2: Choix = None, choix3: Choix = None, choix4: Choix = None,
+    choix5: Choix = None, choix6: Choix = None, choix7: Choix = None, choix8: Choix = None,
+    choix9: Choix = None, choix10: Choix = None
 ):
     """Commande pour créer un sondage"""
     choices = [choix1, choix2, choix3, choix4, choix5, choix6, choix7, choix8, choix9, choix10]
@@ -71,8 +74,6 @@ async def delete_poll(interaction: discord.Interaction, poll_id: int):
         return
     
     try:
-        from utils.events import delete_scheduled_event
-        
         async with database.db.acquire() as conn:
             poll = await conn.fetchrow("SELECT * FROM polls WHERE id = $1", poll_id)
             
@@ -108,8 +109,6 @@ async def clean_events(interaction: discord.Interaction):
     await interaction.response.send_message("🔍 Recherche des événements orphaned...", ephemeral=True)
     
     try:
-        from utils.events import delete_scheduled_event
-        
         async with database.db.acquire() as conn:
             polls = await conn.fetch("SELECT * FROM polls WHERE event_id IS NOT NULL")
         
@@ -154,7 +153,7 @@ async def check_polls(interaction: discord.Interaction):
     """Vérifie l'état des sondages actifs"""
     try:
         async with database.db.acquire() as conn:
-            polls = await conn.fetch("SELECT * FROM polls")
+            polls = await conn.fetch("SELECT * FROM polls ORDER BY id DESC")
 
         if not polls:
             await interaction.response.send_message("Aucun sondage en base", ephemeral=True)
@@ -162,10 +161,14 @@ async def check_polls(interaction: discord.Interaction):
 
         msg = "📊 **Sondages en base :**\n"
         now = datetime.now(Config.TZ)
-        for p in polls:
-            status = "🟢 Actif" if not p["max_date"] or p["max_date"] > now else "🔴 Fermé"
+        for i, p in enumerate(polls):
+            status = "🟢 Actif" if vote_deadline(p) > now else "🔴 Fermé"
             mode = "Multiple" if p.get("allow_multiple", False) else "Unique"
-            msg += f"\n{status} ID:{p['id']} - {p['question'][:40]} ({mode})"
+            line = f"\n{status} ID:{p['id']} - {p['question'][:40]} ({mode})"
+            if len(msg) + len(line) > Config.MAX_CONTENT_LENGTH - 40:  # place pour la ligne "et N autres"
+                msg += f"\n_… et {len(polls) - i} plus anciens_"
+                break
+            msg += line
 
         await interaction.response.send_message(msg, ephemeral=True)
         
@@ -182,8 +185,8 @@ async def restore_poll_views():
         async with database.db.acquire() as conn:
             now = datetime.now(Config.TZ)
             polls = await conn.fetch("""
-                SELECT * FROM polls 
-                WHERE max_date IS NULL OR max_date > $1
+                SELECT * FROM polls
+                WHERE COALESCE(max_date, event_date) > $1
             """, now)
 
         logger.info(f"🔄 Restauration de {len(polls)} sondages actifs...")
@@ -199,6 +202,8 @@ async def restore_poll_views():
                     message = await channel.fetch_message(poll["message_id"])
                 except discord.NotFound:
                     logger.warning(f"Message {poll['message_id']} introuvable, suppression du sondage {poll['id']}")
+                    if poll["event_id"]:  # sinon l'événement reste orphelin, introuvable par /clean_events
+                        await delete_scheduled_event(channel.guild, poll["event_id"])
                     async with database.db.acquire() as conn:
                         await conn.execute("DELETE FROM polls WHERE id=$1", poll["id"])
                     continue

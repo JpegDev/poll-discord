@@ -23,8 +23,8 @@ class TestDateParsing:
         assert result.day == 25
         assert result.month == 12
         assert result.year == 2024
-        assert result.hour == 2
-        assert result.minute == 0
+        assert result.hour == 23
+        assert result.minute == 59
         assert result.tzinfo == Config.TZ
     
     def test_parse_date_with_time(self):
@@ -400,7 +400,7 @@ class TestEditVoteModal:
             "is_presence_poll": True,
             "options": []
         }
-        member_data = (123, "User", "✅")
+        member_data = (123, "User", ["✅"])
         
         view = EditVoteView(1, poll_data, member_data)
         
@@ -415,7 +415,7 @@ class TestEditVoteModal:
             "is_presence_poll": False,
             "options": ["Oui", "Non"]
         }
-        member_data = (123, "User", "🇦")
+        member_data = (123, "User", ["🇦"])
         
         view = EditVoteView(1, poll_data, member_data)
         

@@ -34,7 +34,10 @@ class DateModal(Modal, title="📅 Dates de l'événement"):
     async def on_submit(self, interaction: discord.Interaction):
         try:
             event_dt = self._parse_date(self.event_date.value.strip())
-            max_dt = self._parse_date(self.max_date.value.strip()) if self.max_date.value.strip() else None
+            max_str = self.max_date.value.strip()
+            max_dt = self._parse_date(max_str) if max_str else None
+            if max_dt and "-" not in max_str:
+                max_dt = min(max_dt, event_dt)  # limite "24/12" pour un événement le 24 : vote ouvert jusqu'à l'événement
 
             validation_error = self._validate_dates(event_dt, max_dt)
             if validation_error:
@@ -60,7 +63,8 @@ class DateModal(Modal, title="📅 Dates de l'événement"):
         if "-" in date_str:
             return datetime.strptime(date_str, "%d/%m/%Y-%H:%M").replace(tzinfo=Config.TZ)
         else:
-            return datetime.strptime(date_str, "%d/%m/%Y").replace(hour=2, minute=0, tzinfo=Config.TZ)  # 02:00 : reste le bon jour même affiché en UTC
+            # Sans heure = toute la journée : 23:59 (un événement "aujourd'hui" reste valide, une limite inclut le jour)
+            return datetime.strptime(date_str, "%d/%m/%Y").replace(hour=23, minute=59, tzinfo=Config.TZ)
 
     def _validate_dates(self, event_dt: datetime, max_dt: datetime = None) -> str:
         """Valide les dates saisies. Retourne un message d'erreur ou None"""

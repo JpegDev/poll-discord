@@ -1,4 +1,5 @@
 import discord
+from collections import defaultdict
 from datetime import datetime
 from discord.ui import Button, View, Select
 from utils.config import Config, is_editor
@@ -42,7 +43,9 @@ class BasePollView(View):
                 return
             
             votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", self.poll_id)
-            votes_dict = {v["user_id"]: v["emoji"] for v in votes}
+            votes_dict = defaultdict(list)  # choix multiple : plusieurs votes par membre
+            for v in votes:
+                votes_dict[v["user_id"]].append(v["emoji"])
         
         members_data = []
         channel = interaction.guild.get_channel(poll["channel_id"])
@@ -52,8 +55,7 @@ class BasePollView(View):
                 members = channel_obj.members if hasattr(channel_obj, 'members') else []
                 for member in members:
                     if not member.bot:
-                        current_vote = votes_dict.get(member.id)
-                        members_data.append((member.id, member.display_name, current_vote))
+                        members_data.append((member.id, member.display_name, votes_dict.get(member.id, [])))
             except Exception as e:
                 logger.error(f"Erreur lors de la récupération des membres: {e}")
         
@@ -73,8 +75,8 @@ class BasePollView(View):
         """Gère un vote (logique commune)"""
         try:
             async with database.db.acquire() as conn:
-                max_date = await conn.fetchval("SELECT max_date FROM polls WHERE id=$1", self.poll_id)
-                if max_date and datetime.now(Config.TZ) >= max_date:
+                deadline = await conn.fetchval("SELECT COALESCE(max_date, event_date) FROM polls WHERE id=$1", self.poll_id)
+                if deadline and datetime.now(Config.TZ) >= deadline:
                     await interaction.response.send_message("🔒 Le vote est terminé", ephemeral=True)
                     return
 
@@ -172,8 +174,8 @@ class MemberSelectView(View):
         self.members_data = members_data
         
         options = []
-        for member_id, username, current_vote in members_data[:MAX_SELECT_OPTIONS]:
-            vote_text = f" → {current_vote}" if current_vote else " → ⏸️ Pas de vote"
+        for member_id, username, current_votes in members_data[:MAX_SELECT_OPTIONS]:
+            vote_text = f" → {' '.join(current_votes)}" if current_votes else " → ⏸️ Pas de vote"
             options.append(discord.SelectOption(label=username[:80], value=str(member_id), description=vote_text[:100]))
         
         select = Select(
@@ -213,8 +215,9 @@ class EditVoteView(View):
         super().__init__(timeout=300)
         self.poll_id = poll_id
         self.poll_data = poll_data
-        self.member_id, self.member_name, self.current_vote = member_data
-        
+        self.member_id, self.member_name, current_votes = member_data
+        self.current_votes = current_votes or []
+
         select_options = []
         if poll_data["is_presence_poll"]:
             vote_options = [
@@ -224,31 +227,29 @@ class EditVoteView(View):
             ]
         else:
             vote_options = [(opt, Config.EMOJIS[i]) for i, opt in enumerate(poll_data["options"])]
-        
-        current_label = "Aucun"
-        if self.current_vote:
-            if poll_data["is_presence_poll"]:
-                current_label = {"✅": "Présent", "⏳": "En attente", "❌": "Absent"}.get(self.current_vote, self.current_vote)
-            else:
-                idx = Config.EMOJIS.index(self.current_vote) if self.current_vote in Config.EMOJIS else -1
-                current_label = poll_data["options"][idx] if idx >= 0 and idx < len(poll_data["options"]) else self.current_vote
-        
+
+        labels = {emoji: label for label, emoji in vote_options}
+        current_label = ", ".join(labels.get(v, v) for v in self.current_votes) or "Aucun"
+
         for label, emoji in vote_options:
             select_options.append(discord.SelectOption(
                 label=label,
                 value=emoji,
-                default=(emoji == self.current_vote)
+                default=(emoji in self.current_votes)
             ))
-        
+
         select_options.append(discord.SelectOption(
             label="🗑️ Supprimer le vote",
             value="DELETE",
-            default=(self.current_vote is None)
+            default=not self.current_votes
         ))
-        
+
+        # Choix multiple : on coche/décoche chaque choix, les autres votes du membre sont conservés
+        multiple = poll_data.get("allow_multiple") and not poll_data["is_presence_poll"]
         select = Select(
-            placeholder=f"Vote actuel: {current_label}",
+            placeholder=f"Vote actuel: {current_label}"[:150],
             options=select_options,
+            max_values=len(select_options) if multiple else 1,
             custom_id=f"edit_vote_select_{poll_id}"
         )
         select.callback = self.select_vote_callback
@@ -263,19 +264,19 @@ class EditVoteView(View):
         self.add_item(cancel_btn)
     
     async def select_vote_callback(self, interaction: discord.Interaction):
-        new_vote = interaction.data["values"][0]
-        
+        # La sélection remplace les votes du membre ; "DELETE" seul (ou rien de coché) = plus de vote
+        new_votes = [v for v in interaction.data["values"] if v != "DELETE"]
+
         try:
-            async with database.db.acquire() as conn:
+            async with database.db.acquire() as conn, conn.transaction():
                 await conn.execute(
                     "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
                     self.poll_id, self.member_id
                 )
-                
-                if new_vote and new_vote != "DELETE":
+                for vote in new_votes:
                     await conn.execute(
                         "INSERT INTO votes (poll_id, user_id, emoji) VALUES ($1, $2, $3)",
-                        self.poll_id, self.member_id, new_vote
+                        self.poll_id, self.member_id, vote
                     )
             
             await interaction.response.send_message("✅ Vote modifié avec succès", ephemeral=True)

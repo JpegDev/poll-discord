@@ -249,3 +249,109 @@ async def test_refresh_active_polls_only_touches_polls_of_this_guild(monkeypatch
     await bot.refresh_active_polls(guild)
 
     update.assert_awaited_once_with(channel.get_partial_message.return_value, 1)
+
+
+# --- Audit 2 : sondages sans date limite, /check_polls, choix, dates sans heure, édition, événement orphelin ---
+
+async def test_poll_without_deadline_closes_at_event_without_dms(monkeypatch):
+    from utils import reminders
+    monkeypatch.setattr(reminders, "update_poll_display", AsyncMock())
+    monkeypatch.setattr(reminders, "_send_grouped_reminders", AsyncMock())
+    now = datetime.now(Config.TZ)
+    poll = dict(id=1, channel_id=2, message_id=3, event_id=None, is_presence_poll=True, question="q",
+                event_date=now - timedelta(hours=1), max_date=None)
+    message = Mock(edit=AsyncMock(), jump_url="http://x")
+    channel = Mock(fetch_message=AsyncMock(return_value=message))
+    channel.guild.members = [Mock(id=10, bot=False)]  # n'a pas voté
+    channel.permissions_for.return_value.read_messages = True
+    conn = fake_conn()
+    conn.fetch.side_effect = [[poll], []]  # sondages, puis votes (aucun)
+    monkeypatch.setattr(database, "db", fake_pool(conn))
+    monkeypatch.setattr(database, "bot", Mock(get_channel=Mock(return_value=channel)))
+    monkeypatch.setattr(reminders, "_reminder_already_sent", AsyncMock(return_value=False))
+
+    await reminders.send_reminders()
+
+    message.edit.assert_any_await(view=None)  # boutons retirés
+    assert not any(c.args[0] for c in reminders._send_grouped_reminders.await_args_list if c.args[0])  # aucun DM
+
+
+async def test_vote_refused_after_event_when_no_deadline(monkeypatch):
+    from utils import views
+    conn = fake_conn(fetchval=datetime.now(Config.TZ) - timedelta(minutes=1))
+    monkeypatch.setattr(database, "db", fake_pool(conn))
+    interaction = Mock(user=Mock(id=1))
+    interaction.response.send_message = AsyncMock()
+    await views.PollView(1, ["a", "b"], True, show_edit=False).handle_vote(interaction, "🇦")
+    assert "COALESCE(max_date, event_date)" in conn.fetchval.await_args.args[0]
+    assert "terminé" in interaction.response.send_message.await_args.args[0]
+
+
+async def test_check_polls_stays_under_discord_limit(monkeypatch):
+    import bot
+    now = datetime.now(Config.TZ)
+    polls = [dict(id=i, question="x" * 60, max_date=None, event_date=now, allow_multiple=False) for i in range(200)]
+    monkeypatch.setattr(database, "db", fake_pool(fake_conn(fetch=polls)))
+    interaction = Mock()
+    interaction.response.send_message = AsyncMock()
+    await bot.check_polls.callback(interaction)
+    msg = interaction.response.send_message.await_args.args[0]
+    assert len(msg) <= Config.MAX_CONTENT_LENGTH and "plus anciens" in msg
+
+
+def test_poll_choices_limited_to_80_chars():
+    import bot
+    params = {p.name: p for p in bot.poll_command.parameters}
+    assert all(params[f"choix{i}"].max_value == 80 for i in range(1, 11))
+
+
+def test_date_only_event_today_is_valid_and_deadline_covers_the_day():
+    from utils.modals import DateModal
+    modal = DateModal("q", [], True)
+    today = modal._parse_date(datetime.now(Config.TZ).strftime("%d/%m/%Y"))
+    assert modal._validate_dates(today) is None
+    assert (today.hour, today.minute) == (23, 59)
+
+
+async def test_date_only_deadline_on_event_day_is_capped_at_event(monkeypatch):
+    from utils import modals, poll_utils
+    create = AsyncMock()
+    monkeypatch.setattr(poll_utils, "create_poll", create)
+    day = (datetime.now(Config.TZ) + timedelta(days=3)).strftime("%d/%m/%Y")
+    modal = modals.DateModal("q", [], True)
+    modal.event_date._value, modal.max_date._value = f"{day}-20:00", day
+    await modal.on_submit(Mock())
+    event_dt, max_dt = create.await_args.args[4:6]
+    assert max_dt == event_dt
+
+
+async def test_editor_keeps_other_choices_in_multiple_poll(monkeypatch):
+    from utils import views
+    conn = fake_conn()
+    conn.transaction = MagicMock()
+    conn.transaction.return_value.__aenter__ = AsyncMock()
+    conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(database, "db", fake_pool(conn))
+    poll = dict(is_presence_poll=False, allow_multiple=True, options=["a", "b", "c"], channel_id=1, message_id=2)
+    view = views.EditVoteView(1, poll, (10, "u", ["🇦", "🇧"]))
+    assert view.children[0].max_values > 1
+
+    interaction = Mock(data={"values": ["🇦", "🇧", "🇨"]}, client=Mock(get_channel=Mock(return_value=None)))
+    interaction.response.send_message = AsyncMock()
+    await view.select_vote_callback(interaction)
+    inserted = [c.args[3] for c in conn.execute.await_args_list if "INSERT" in c.args[0]]
+    assert inserted == ["🇦", "🇧", "🇨"]
+
+
+async def test_restore_deletes_event_when_message_is_gone(monkeypatch):
+    import bot
+    delete_event = AsyncMock()
+    monkeypatch.setattr(bot, "delete_scheduled_event", delete_event)
+    monkeypatch.setattr(bot.bot, "wait_until_ready", AsyncMock())
+    channel = Mock(fetch_message=AsyncMock(side_effect=http_error(discord.NotFound, 404)))
+    monkeypatch.setattr(bot.bot, "get_channel", Mock(return_value=channel))
+    poll = dict(id=1, channel_id=2, message_id=3, event_id=99)
+    monkeypatch.setattr(database, "db", fake_pool(fake_conn(fetch=[poll])))
+
+    await bot.restore_poll_views()
+    delete_event.assert_awaited_once_with(channel.guild, 99)

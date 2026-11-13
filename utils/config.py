@@ -34,6 +34,11 @@ def fmt_dt(dt) -> str:
     return dt.astimezone(Config.TZ).strftime("%d/%m/%Y à %H:%M")
 
 
+def vote_deadline(poll):
+    """Fin du vote : la date limite, sinon l'événement lui-même"""
+    return poll["max_date"] or poll["event_date"]
+
+
 def is_quiet_time(now) -> bool:
     """Pas de rappel du vendredi 18h au dimanche 18h"""
     wd = now.weekday()
