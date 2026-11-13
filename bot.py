@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from discord import app_commands
 from discord.ext import commands
 
-from utils.config import Config, logger, is_editor
+from utils.config import Config, logger, is_editor, is_quiet_time
 from utils import database
 from utils.views import PollView, PresencePollView
 from utils.modals import DateModal
@@ -34,6 +34,7 @@ tree = bot.tree
     choix9="Neuvième choix",
     choix10="Dixième choix",
 )
+@app_commands.guild_only()
 async def poll_command(
     interaction: discord.Interaction,
     question: str = "Dispo?",
@@ -62,6 +63,7 @@ async def poll_command(
 
 @tree.command(name="delete_poll", description="Supprimer un sondage (admin)")
 @app_commands.describe(poll_id="ID du sondage à supprimer")
+@app_commands.guild_only()
 async def delete_poll(interaction: discord.Interaction, poll_id: int):
     """Supprime un sondage et son événement associé"""
     if not is_editor(interaction):
@@ -96,6 +98,7 @@ async def delete_poll(interaction: discord.Interaction, poll_id: int):
 
 
 @tree.command(name="clean_events", description="Supprime les événements orphaned (admin)")
+@app_commands.guild_only()
 async def clean_events(interaction: discord.Interaction):
     """Supprime les événements Discord dont le message a été supprimé"""
     if not is_editor(interaction):
@@ -146,6 +149,7 @@ async def clean_events(interaction: discord.Interaction):
 
 @tree.command(name="check_polls", description="Vérifie l'état des sondages actifs (admin)")
 @app_commands.checks.has_permissions(administrator=True)
+@app_commands.guild_only()
 async def check_polls(interaction: discord.Interaction):
     """Vérifie l'état des sondages actifs"""
     try:
@@ -222,24 +226,11 @@ async def reminder_scheduler():
 
     while not bot.is_closed():
         try:
-            if database.bot is None:
-                database.bot = bot
-            
-            now = datetime.now(Config.TZ)
-            
-            if now.weekday() == 4 and now.hour >= 18:
-                logger.info("⏸️ Pas de rappel le vendredi soir")
+            if is_quiet_time(datetime.now(Config.TZ)):
+                logger.info("⏸️ Pas de rappel (vendredi 18h → dimanche 18h)")
                 await asyncio.sleep(3600)
                 continue
-            if now.weekday() == 5:
-                logger.info("⏸️ Pas de rappel le samedi")
-                await asyncio.sleep(3600)
-                continue
-            if now.weekday() == 6 and now.hour < 18:
-                logger.info("⏸️ Pas de rappel le dimanche avant 18h")
-                await asyncio.sleep(3600)
-                continue
-            
+
             await send_reminders()
         except Exception as e:
             logger.error(f"❌ Erreur dans le scheduler de rappels: {e}")
@@ -253,56 +244,44 @@ async def daily_19h_scheduler():
 
     while not bot.is_closed():
         try:
-            if database.bot is None:
-                database.bot = bot
-            
             now = datetime.now(Config.TZ)
-            
-            if now.weekday() == 4 and now.hour >= 18:
-                logger.info("⏸️ Pas de rappel le vendredi soir")
-                await asyncio.sleep(3600)
-                continue
-            if now.weekday() == 5:
-                logger.info("⏸️ Pas de rappel le samedi")
-                await asyncio.sleep(3600)
-                continue
-            if now.weekday() == 6 and now.hour < 18:
-                logger.info("⏸️ Pas de rappel le dimanche avant 18h")
-                await asyncio.sleep(3600)
-                continue
-            
             target = now.replace(hour=Config.DAILY_REMINDER_HOUR, minute=0, second=0, microsecond=0)
             if now.hour >= Config.DAILY_REMINDER_HOUR:
                 target += timedelta(days=1)
-            
+
             wait_seconds = (target - now).total_seconds()
             logger.info(f"⏰ Prochain rappel quotidien dans {wait_seconds/3600:.1f}h ({target})")
             await asyncio.sleep(wait_seconds)
-            
+
+            # Le contrôle se fait après le sleep : c'est l'heure d'envoi qui compte
+            if is_quiet_time(datetime.now(Config.TZ)):
+                logger.info("⏸️ Pas de rappel (vendredi 18h → dimanche 18h)")
+                continue
+
             await send_non_voters_biweekly_reminders()
-            
+
         except Exception as e:
             logger.error(f"❌ Erreur dans le scheduler quotidien: {e}")
             await asyncio.sleep(3600)
 
 
 @bot.event
+async def setup_hook():
+    """Exécuté une seule fois au démarrage (contrairement à on_ready, rappelé à chaque reconnexion)"""
+    database.db = await database.get_db()
+    database.bot = bot
+    await database.init_db()
+    await tree.sync()
+
+    # Tâches de fond : elles attendent elles-mêmes bot.wait_until_ready()
+    asyncio.create_task(restore_poll_views())
+    asyncio.create_task(reminder_scheduler())
+    asyncio.create_task(daily_19h_scheduler())
+
+
+@bot.event
 async def on_ready():
-    try:
-        database.db = await database.get_db()
-        database.bot = bot
-        await database.init_db()
-        await tree.sync()
-
-        await restore_poll_views()
-
-        bot.loop.create_task(reminder_scheduler())
-        bot.loop.create_task(daily_19h_scheduler())
-
-        logger.info(f"✅ Bot connecté : {bot.user}")
-    except Exception as e:
-        logger.error(f"❌ Erreur critique lors du démarrage: {e}")
-        raise
+    logger.info(f"✅ Bot connecté : {bot.user}")
 
 
 if __name__ == "__main__":

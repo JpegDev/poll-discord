@@ -1,4 +1,5 @@
 import discord
+from datetime import datetime
 from discord.ui import Button, View, Select
 from utils.config import Config, is_editor
 from utils import database
@@ -6,6 +7,8 @@ from utils.poll_utils import update_poll_display
 import logging
 
 logger = logging.getLogger(__name__)
+
+MAX_SELECT_OPTIONS = 25  # limite Discord d'un Select
 
 
 class BasePollView(View):
@@ -57,8 +60,11 @@ class BasePollView(View):
         members_data.sort(key=lambda x: x[1].lower())
         
         view = MemberSelectView(self.poll_id, dict(poll), members_data)
+        text = "Sélectionnez un membre dont vous voulez modifier le vote:"
+        if len(members_data) > MAX_SELECT_OPTIONS:
+            text += f"\n⚠️ Liste limitée aux {MAX_SELECT_OPTIONS} premiers membres (ordre alphabétique) sur {len(members_data)}."
         await interaction.response.send_message(
-            "Sélectionnez un membre dont vous voulez modifier le vote:",
+            text,
             view=view,
             ephemeral=True
         )
@@ -67,45 +73,43 @@ class BasePollView(View):
         """Gère un vote (logique commune)"""
         try:
             async with database.db.acquire() as conn:
-                existing_votes = await conn.fetch(
-                    "SELECT emoji FROM votes WHERE poll_id=$1 AND user_id=$2",
-                    self.poll_id, interaction.user.id
-                )
-                
-                existing_emojis = [v["emoji"] for v in existing_votes]
-                
-                if emoji in existing_emojis:
-                    await conn.execute(
-                        "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2 AND emoji=$3",
+                max_date = await conn.fetchval("SELECT max_date FROM polls WHERE id=$1", self.poll_id)
+                if max_date and datetime.now(Config.TZ) >= max_date:
+                    await interaction.response.send_message("🔒 Le vote est terminé", ephemeral=True)
+                    return
+
+                # DELETE + INSERT atomiques : un clic ne laisse jamais un état à moitié écrit
+                async with conn.transaction():
+                    already_voted = await conn.fetchval(
+                        "SELECT 1 FROM votes WHERE poll_id=$1 AND user_id=$2 AND emoji=$3",
                         self.poll_id, interaction.user.id, emoji
                     )
-                    await interaction.response.send_message("✅ Vote annulé", ephemeral=True)
-                    logger.info(f"Vote annulé: user={interaction.user.id}, poll={self.poll_id}, emoji={emoji}")
-                else:
-                    if not self.allow_multiple:
+                    if already_voted:
                         await conn.execute(
-                            "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
-                            self.poll_id, interaction.user.id
+                            "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2 AND emoji=$3",
+                            self.poll_id, interaction.user.id, emoji
                         )
-                    
-                    await conn.execute("""
-                        INSERT INTO votes (poll_id, user_id, emoji) 
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT DO NOTHING
-                    """, self.poll_id, interaction.user.id, emoji)
-                    
-                    if self.allow_multiple:
-                        await interaction.response.send_message("✅ Vote ajouté (choix multiple)", ephemeral=True)
+                        message = "✅ Vote annulé"
                     else:
-                        await interaction.response.send_message("✅ Vote enregistré", ephemeral=True)
-                    
-                    logger.info(f"Vote enregistré: user={interaction.user.id}, poll={self.poll_id}, emoji={emoji}")
+                        if not self.allow_multiple:
+                            await conn.execute(
+                                "DELETE FROM votes WHERE poll_id=$1 AND user_id=$2",
+                                self.poll_id, interaction.user.id
+                            )
+                        await conn.execute(
+                            "INSERT INTO votes (poll_id, user_id, emoji) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                            self.poll_id, interaction.user.id, emoji
+                        )
+                        message = "✅ Vote ajouté (choix multiple)" if self.allow_multiple else "✅ Vote enregistré"
 
+            await interaction.response.send_message(message, ephemeral=True)
+            logger.info(f"{message}: user={interaction.user.id}, poll={self.poll_id}, emoji={emoji}")
             await update_poll_display(interaction.message, self.poll_id)
-        
+
         except Exception as e:
             logger.error(f"❌ Erreur lors du vote: {e}")
-            await interaction.response.send_message("❌ Erreur lors de l'enregistrement du vote", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ Erreur lors de l'enregistrement du vote", ephemeral=True)
 
 
 class PollView(BasePollView):
@@ -168,7 +172,7 @@ class MemberSelectView(View):
         self.members_data = members_data
         
         options = []
-        for member_id, username, current_vote in members_data:
+        for member_id, username, current_vote in members_data[:MAX_SELECT_OPTIONS]:
             vote_text = f" → {current_vote}" if current_vote else " → ⏸️ Pas de vote"
             options.append(discord.SelectOption(label=username[:80], value=str(member_id), description=vote_text[:100]))
         
@@ -291,6 +295,3 @@ class EditVoteView(View):
     
     async def cancel_callback(self, interaction: discord.Interaction):
         await interaction.response.send_message("❌ Opération annulée", ephemeral=True)
-
-
-# Retirer l'ancienne classe EditVoteSingleModal

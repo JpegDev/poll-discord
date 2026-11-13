@@ -47,6 +47,9 @@ async def send_reminders():
                     await close_poll(poll)
                     continue
 
+                if poll["event_date"] <= now:
+                    continue  # événement passé : plus de rappel
+
                 channel = database.bot.get_channel(poll["channel_id"])
                 if not channel:
                     continue
@@ -83,11 +86,11 @@ async def send_reminders():
                             logger.info(f"📨 Rappel J-1 marqué pour le sondage {poll['id']}")
                 else:
                     if poll["is_presence_poll"]:
-                        poll_age = now - poll["created_at"].replace(tzinfo=Config.TZ)
-                        weeks_since_creation = int(poll_age.days / 7)
+                        created_at = poll["created_at"].astimezone(Config.TZ)
+                        weeks_since_creation = (now - created_at).days // 7
                         for week in range(1, weeks_since_creation + 1):
                             if not await _reminder_already_sent(poll["id"], f"weekly_waiting_{week}"):
-                                target_week_date = poll["created_at"].replace(tzinfo=Config.TZ) + timedelta(weeks=week)
+                                target_week_date = created_at + timedelta(weeks=week)
                                 if target_week_date.date() == now.date() and 18 <= now.hour <= 20:
                                     for uid in waiting_user_ids:
                                         user_reminders[uid].append(f"📅 **Rappel hebdomadaire** — {poll_summary}")
@@ -159,14 +162,15 @@ async def send_non_voters_biweekly_reminders():
         now = datetime.now(Config.TZ)
         
         async with database.db.acquire() as conn:
-            polls = await conn.fetch("SELECT * FROM polls WHERE max_date IS NULL OR max_date > $1", now)
+            polls = await conn.fetch(
+                "SELECT * FROM polls WHERE (max_date IS NULL OR max_date > $1) AND event_date > $1", now
+            )
         
         user_reminders = defaultdict(list)
 
         for poll in polls:
             try:
-                poll_age = now - poll["created_at"].replace(tzinfo=Config.TZ)
-                days_since_creation = poll_age.days
+                days_since_creation = (now - poll["created_at"]).days
                 
                 if days_since_creation > 0 and days_since_creation % 2 == 0:
                     if not await _reminder_already_sent(poll["id"], f"non_voters_day_{days_since_creation}"):
@@ -260,9 +264,11 @@ async def close_poll(poll):
                 if member.id not in voted_user_ids:
                     user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | ❌ Pas voté | 👉 {message.jump_url}")
 
+        # Toujours retirer les boutons, même si tout le monde a voté
+        await message.edit(view=None)
+        await update_poll_display(message, poll["id"])
+
         if user_reminders:
-            await message.edit(view=None)
-            await update_poll_display(message, poll["id"])
             total_notified = sum(len(v) for v in user_reminders.values())
             await _send_grouped_reminders(user_reminders, "🔒 **Résultats — Vote terminé**")
             logger.info(f"🔒 Sondage {poll['id']} fermé, {total_notified} notifications envoyées")

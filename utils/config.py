@@ -29,6 +29,12 @@ class Config:
     EDITOR_ROLE_ID = int(os.getenv("EDITOR_ROLE_ID", "0")) or None
 
 
+def is_quiet_time(now) -> bool:
+    """Pas de rappel du vendredi 18h au dimanche 18h"""
+    wd = now.weekday()
+    return (wd == 4 and now.hour >= 18) or wd == 5 or (wd == 6 and now.hour < 18)
+
+
 def is_editor(interaction) -> bool:
     """Vérifie si l'utilisateur a le rôle éditeur de sondage"""
     if Config.EDITOR_ROLE_ID is None:
