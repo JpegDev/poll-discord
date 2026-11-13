@@ -23,7 +23,7 @@ class TestDateParsing:
         assert result.day == 25
         assert result.month == 12
         assert result.year == 2024
-        assert result.hour == 0
+        assert result.hour == 2
         assert result.minute == 0
         assert result.tzinfo == Config.TZ
     

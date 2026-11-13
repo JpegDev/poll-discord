@@ -60,7 +60,7 @@ class DateModal(Modal, title="📅 Dates de l'événement"):
         if "-" in date_str:
             return datetime.strptime(date_str, "%d/%m/%Y-%H:%M").replace(tzinfo=Config.TZ)
         else:
-            return datetime.strptime(date_str, "%d/%m/%Y").replace(hour=0, minute=0, tzinfo=Config.TZ)
+            return datetime.strptime(date_str, "%d/%m/%Y").replace(hour=2, minute=0, tzinfo=Config.TZ)  # 02:00 : reste le bon jour même affiché en UTC
 
     def _validate_dates(self, event_dt: datetime, max_dt: datetime = None) -> str:
         """Valide les dates saisies. Retourne un message d'erreur ou None"""

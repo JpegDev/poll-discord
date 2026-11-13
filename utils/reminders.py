@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import discord
 
-from utils.config import Config
+from utils.config import Config, fmt_dt
 from utils import database
 from utils.poll_utils import update_poll_display
 from utils.events import check_event_exists
@@ -66,8 +66,8 @@ async def send_reminders():
                     votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
                 waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
 
-                event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
-                deadline_str = f" | ⏰ Limite : {poll['max_date'].strftime('%d/%m/%Y à %H:%M')}" if poll["max_date"] else ""
+                event_str = fmt_dt(poll["event_date"])
+                deadline_str = f" | ⏰ Limite : {fmt_dt(poll['max_date'])}" if poll["max_date"] else ""
                 poll_summary = f"#{channel.name} — {poll['question']} | 📅 {event_str}{deadline_str} | 👉 {message.jump_url}"
 
                 if poll["max_date"]:
@@ -188,8 +188,8 @@ async def send_non_voters_biweekly_reminders():
                         voted_user_ids = {v["user_id"] for v in votes}
                         waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
 
-                        event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
-                        deadline_str = f" | ⏰ Limite : {poll['max_date'].strftime('%d/%m/%Y à %H:%M')}" if poll["max_date"] else ""
+                        event_str = fmt_dt(poll["event_date"])
+                        deadline_str = f" | ⏰ Limite : {fmt_dt(poll['max_date'])}" if poll["max_date"] else ""
                         poll_summary = f"#{channel.name} — {poll['question']} | 📅 {event_str}{deadline_str} | 👉 {message.jump_url}"
 
                         for member in guild.members:
@@ -259,10 +259,10 @@ async def close_poll(poll):
             if poll["is_presence_poll"]:
                 if member.id not in voted_user_ids or member.id in waiting_user_ids:
                     status = "⏳ En attente non confirmée" if member.id in waiting_user_ids else "❌ Pas voté"
-                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | {status} | 👉 {message.jump_url}")
+                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {fmt_dt(poll['event_date'])} | {status} | 👉 {message.jump_url}")
             else:
                 if member.id not in voted_user_ids:
-                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {poll['event_date'].strftime('%d/%m/%Y à %H:%M')} | ❌ Pas voté | 👉 {message.jump_url}")
+                    user_reminders[member.id].append(f"🔒 **Le vote est terminé !** — #{channel.name} — {poll['question']} | 📅 {fmt_dt(poll['event_date'])} | ❌ Pas voté | 👉 {message.jump_url}")
 
         # Toujours retirer les boutons, même si tout le monde a voté
         await message.edit(view=None)

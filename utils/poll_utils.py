@@ -3,7 +3,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 
-from utils.config import Config
+from utils.config import Config, fmt_dt
 from utils import database
 
 logger = logging.getLogger(__name__)
@@ -181,11 +181,11 @@ def _add_non_voters_section(content_parts, poll, guild, channel, votes, vote_cou
 def _add_dates_section(content_parts, poll):
     """Ajoute la section des dates au contenu"""
     content_parts.append("")
-    event_str = poll["event_date"].strftime("%d/%m/%Y à %H:%M")
+    event_str = fmt_dt(poll["event_date"])
     content_parts.append(f"**📅 Événement :** {event_str}")
 
     if poll["max_date"]:
-        max_str = poll["max_date"].strftime("%d/%m/%Y à %H:%M")
+        max_str = fmt_dt(poll["max_date"])
         content_parts.append(f"**⏰ Date limite de vote :** {max_str}")
 
     now = datetime.now(Config.TZ)

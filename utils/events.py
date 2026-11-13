@@ -2,6 +2,8 @@ import discord
 import logging
 from datetime import timedelta
 
+from utils.config import fmt_dt
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,7 +18,7 @@ async def create_scheduled_event(guild: discord.Guild, poll: dict, channel_name:
         event_start = poll["event_date"]
         event_end = event_start + timedelta(hours=2)
         
-        description = f"Sondage créé via bot Discord\nDate limite de vote: {poll['max_date'].strftime('%d/%m/%Y') if poll['max_date'] else 'Aucune'}"
+        description = f"Sondage créé via bot Discord\nDate limite de vote: {fmt_dt(poll['max_date']) if poll['max_date'] else 'Aucune'}"
         
         event = await guild.create_scheduled_event(
             name=event_name,

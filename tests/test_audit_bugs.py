@@ -160,3 +160,21 @@ async def test_handle_vote_rejected_after_deadline(monkeypatch):
 
     assert "terminé" in interaction.response.send_message.await_args.args[0]
     conn.execute.assert_not_awaited()
+
+
+# --- Dates : asyncpg renvoie les timestamptz en UTC, l'affichage doit être en heure de Paris ---
+
+def test_fmt_dt_converts_utc_to_paris():
+    from datetime import timezone
+    from utils.config import fmt_dt
+    # 25/12 02:00 Paris (hiver, UTC+1) == 25/12 01:00 UTC ; avant : minuit Paris s'affichait "24/12 à 23:00"
+    assert fmt_dt(datetime(2024, 12, 25, 1, 0, tzinfo=timezone.utc)) == "25/12/2024 à 02:00"
+    assert fmt_dt(datetime(2024, 12, 24, 23, 0, tzinfo=timezone.utc)) == "25/12/2024 à 00:00"
+
+
+def test_date_only_stays_same_day_in_utc():
+    from datetime import timezone
+    from utils.modals import DateModal
+    for d in ("25/12/2024", "25/07/2024"):  # hiver et été
+        utc = DateModal("q", [], False)._parse_date(d).astimezone(timezone.utc)
+        assert utc.day == 25
