@@ -51,7 +51,7 @@ services:
   db:
     container_name: discord_postgres-NOMSERVEUR     # 1. nom unique
     ports:
-      - "5433:5432"                                 # 4. port hôte différent (ou supprimer le bloc ports)
+      - "127.0.0.1:5433:5432"                       # 4. port hôte différent (ou supprimer le bloc ports)
 ```
 
 - Gardez `DATABASE_URL` tel quel : le bot joint la base par le réseau interne de Docker (`db`), pas par le port publié.
