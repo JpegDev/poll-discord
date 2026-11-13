@@ -9,11 +9,11 @@ from utils.config import Config, logger, is_editor, is_quiet_time
 from utils import database
 from utils.views import PollView, PresencePollView
 from utils.modals import DateModal
+from utils.poll_utils import update_poll_display
 from utils.reminders import send_reminders, send_non_voters_biweekly_reminders
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
@@ -263,6 +263,48 @@ async def daily_19h_scheduler():
         except Exception as e:
             logger.error(f"❌ Erreur dans le scheduler quotidien: {e}")
             await asyncio.sleep(3600)
+
+
+async def refresh_active_polls(guild, channel_id=None):
+    """Réaffiche les sondages actifs : votants/non-votants à jour après un changement de membres ou de droits"""
+    try:
+        now = datetime.now(Config.TZ)
+        async with database.db.acquire() as conn:
+            polls = await conn.fetch(
+                "SELECT id, channel_id, message_id FROM polls WHERE (max_date IS NULL OR max_date > $1) AND event_date > $1",
+                now
+            )
+        for poll in polls:
+            if channel_id and poll["channel_id"] != channel_id:
+                continue
+            channel = guild.get_channel(poll["channel_id"])
+            if channel:  # None = sondage d'un autre serveur
+                # ponytail: une édition par sondage et par événement, pas de debounce ; à ajouter si les rôles sont modifiés en masse
+                await update_poll_display(channel.get_partial_message(poll["message_id"]), poll["id"])
+    except Exception as e:
+        logger.error(f"❌ Erreur lors du rafraîchissement des sondages: {e}")
+
+
+@bot.event
+async def on_member_join(member):
+    await refresh_active_polls(member.guild)
+
+
+@bot.event
+async def on_member_remove(member):
+    await refresh_active_polls(member.guild)
+
+
+@bot.event
+async def on_member_update(before, after):
+    if before.roles != after.roles:
+        await refresh_active_polls(after.guild)
+
+
+@bot.event
+async def on_guild_channel_update(before, after):
+    if before.overwrites != after.overwrites:
+        await refresh_active_polls(after.guild, after.id)
 
 
 @bot.event

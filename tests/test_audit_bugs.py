@@ -178,3 +178,74 @@ def test_date_only_stays_same_day_in_utc():
     for d in ("25/12/2024", "25/07/2024"):  # hiver et été
         utc = DateModal("q", [], False)._parse_date(d).astimezone(timezone.utc)
         assert utc.day == 25
+
+
+# --- Membres : votes d'un ex-membre ignorés, nouvel arrivant peut voter, affichage rafraîchi ---
+
+def _guild_with(*members, chunked=True):
+    guild = Mock(chunked=chunked)
+    guild.members = list(members)
+    return guild
+
+
+def _member(uid, bot=False):
+    return Mock(id=uid, bot=bot)
+
+
+def test_eligible_user_ids_excludes_members_without_channel_access():
+    from utils.poll_utils import eligible_user_ids
+    stay, removed = _member(1), _member(2)
+    channel = Mock()
+    channel.permissions_for.side_effect = lambda m: Mock(read_messages=m is stay)
+    guild = _guild_with(stay, removed, _member(3, bot=True))
+    assert eligible_user_ids(guild, channel) == {1}
+
+
+def test_eligible_user_ids_none_when_member_cache_not_loaded():
+    from utils.poll_utils import eligible_user_ids
+    assert eligible_user_ids(_guild_with(chunked=False), Mock()) is None
+
+
+async def test_update_poll_display_ignores_votes_of_departed_members():
+    from utils import poll_utils
+    now = datetime.now(Config.TZ)
+    poll = dict(id=1, question="q", options=["a", "b"], is_presence_poll=False, allow_multiple=False,
+                event_date=now + timedelta(days=3), max_date=None)
+    conn = fake_conn(fetchrow=poll, fetch=[{"user_id": 1, "emoji": "🇦"}, {"user_id": 2, "emoji": "🇦"}])
+    database.db = fake_pool(conn)
+
+    channel = Mock()
+    channel.permissions_for.return_value.read_messages = True
+    message = Mock(edit=AsyncMock(), channel=channel, guild=_guild_with(_member(1)))  # 2 a quitté
+    await poll_utils.update_poll_display(message, 1)
+
+    content = message.edit.await_args.kwargs["content"]
+    assert "<@1>" in content and "<@2>" not in content
+
+
+async def test_newcomer_can_vote_before_deadline(monkeypatch):
+    from utils import views
+    monkeypatch.setattr(views, "update_poll_display", AsyncMock())
+    conn = fake_conn(fetchval=None)  # pas de date limite dépassée, pas de vote existant
+    monkeypatch.setattr(database, "db", fake_pool(conn))
+
+    interaction = Mock(user=Mock(id=999))  # arrivé après la création du sondage
+    interaction.response.send_message = AsyncMock()
+    await views.PollView(1, ["a", "b"], False, show_edit=False).handle_vote(interaction, "🇦")
+
+    assert any("INSERT INTO votes" in c.args[0] for c in conn.execute.await_args_list)
+
+
+async def test_refresh_active_polls_only_touches_polls_of_this_guild(monkeypatch):
+    import bot
+    update = AsyncMock()
+    monkeypatch.setattr(bot, "update_poll_display", update)
+    polls = [dict(id=1, channel_id=10, message_id=100), dict(id=2, channel_id=20, message_id=200)]
+    monkeypatch.setattr(database, "db", fake_pool(fake_conn(fetch=polls)))
+
+    channel = Mock()
+    guild = Mock()
+    guild.get_channel.side_effect = lambda cid: channel if cid == 10 else None  # le salon 20 est ailleurs
+    await bot.refresh_active_polls(guild)
+
+    update.assert_awaited_once_with(channel.get_partial_message.return_value, 1)

@@ -9,6 +9,13 @@ from utils import database
 logger = logging.getLogger(__name__)
 
 
+def eligible_user_ids(guild, channel):
+    """Ids des membres qui peuvent lire le salon. None si le cache membres n'est pas chargé (on ne filtre pas)."""
+    if not guild or not guild.chunked:
+        return None
+    return {m.id for m in guild.members if not m.bot and (not channel or channel.permissions_for(m).read_messages)}
+
+
 async def create_poll(interaction: discord.Interaction, question: str, options: list, 
                      is_presence: bool, event_date: datetime, max_date: datetime = None,
                      allow_multiple: bool = False):
@@ -76,6 +83,11 @@ async def update_poll_display(message: discord.Message, poll_id: int):
                 return
 
             votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll_id)
+
+        # Les votes de ceux qui ont quitté le salon (parti, rôle retiré...) ne comptent plus
+        eligible = eligible_user_ids(message.guild, message.channel)
+        if eligible is not None:
+            votes = [v for v in votes if v["user_id"] in eligible]
 
         vote_counts = defaultdict(list)
         user_votes = defaultdict(list)

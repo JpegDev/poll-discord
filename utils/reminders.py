@@ -6,7 +6,7 @@ import discord
 
 from utils.config import Config, fmt_dt
 from utils import database
-from utils.poll_utils import update_poll_display
+from utils.poll_utils import update_poll_display, eligible_user_ids
 from utils.events import check_event_exists
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,9 @@ async def send_reminders():
                 async with database.db.acquire() as conn:
                     votes = await conn.fetch("SELECT user_id, emoji FROM votes WHERE poll_id=$1", poll["id"])
                 waiting_user_ids = {v["user_id"] for v in votes if v["emoji"] == "⏳"}
+                eligible = eligible_user_ids(channel.guild, channel)
+                if eligible is not None:
+                    waiting_user_ids &= eligible  # pas de rappel à qui a perdu l'accès au salon
 
                 event_str = fmt_dt(poll["event_date"])
                 deadline_str = f" | ⏰ Limite : {fmt_dt(poll['max_date'])}" if poll["max_date"] else ""
